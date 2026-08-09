@@ -890,8 +890,15 @@ button.active {
   gap: 4px;
 }
 
-.toolbar__icon-btn {
+.toolbar__icons {
   margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar__icon-btn {
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -899,6 +906,11 @@ button.active {
   width: 32px;
   height: 32px;
   padding: 0;
+}
+
+.toolbar__icon-btn--close:hover:not(:disabled) {
+  background: #d64a4a;
+  border-color: #d64a4a;
 }
 
 .toolbar-menu {

@@ -424,20 +424,34 @@ export default function Reader({ fileName, archive, initialProgress, onProgress,
             </button>
           </ToolbarMenu>
         </div>
-        <button
-          type="button"
-          className={`toolbar__icon-btn${fullscreen ? " active" : ""}`}
-          onClick={toggleFullscreen}
-          aria-label="Plein écran"
-          title="Plein écran"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="8 3 3 3 3 8" />
-            <polyline points="16 3 21 3 21 8" />
-            <polyline points="3 16 3 21 8 21" />
-            <polyline points="21 16 21 21 16 21" />
-          </svg>
-        </button>
+        <div className="toolbar__icons">
+          <button
+            type="button"
+            className={`toolbar__icon-btn${fullscreen ? " active" : ""}`}
+            onClick={toggleFullscreen}
+            aria-label="Plein écran"
+            title="Plein écran"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="8 3 3 3 3 8" />
+              <polyline points="16 3 21 3 21 8" />
+              <polyline points="3 16 3 21 8 21" />
+              <polyline points="21 16 21 21 16 21" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="toolbar__icon-btn toolbar__icon-btn--close"
+            onClick={onClose}
+            aria-label="Fermer"
+            title="Fermer"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="4" y1="4" x2="20" y2="20" />
+              <line x1="20" y1="4" x2="4" y2="20" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <div className="reader__body">
