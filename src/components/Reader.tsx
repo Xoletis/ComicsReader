@@ -11,6 +11,7 @@ interface Props {
   initialProgress: ReaderProgress | null;
   onProgress: (progress: ReaderProgress) => void;
   onClose: () => void;
+  onOpenFile: (file: File) => void;
 }
 
 const ZOOM_MIN = 25;
@@ -26,7 +27,7 @@ const KEEP_RADIUS = 5;
 const THUMBNAILS_VISIBLE_KEY = "cbreader:readerThumbnailsVisible";
 const PAGEBAR_VISIBLE_KEY = "cbreader:readerPageBarVisible";
 
-export default function Reader({ fileName, archive, initialProgress, onProgress, onClose }: Props) {
+export default function Reader({ fileName, archive, initialProgress, onProgress, onClose, onOpenFile }: Props) {
   const [pageIndex, setPageIndex] = useState(() => Math.min(initialProgress?.pageIndex ?? 0, archive.pageCount - 1));
   const [zoom, setZoom] = useState<ZoomMode>(initialProgress?.zoom ?? "fit-width");
   const [doublePage, setDoublePage] = useState(initialProgress?.doublePage ?? false);
@@ -42,6 +43,7 @@ export default function Reader({ fileName, archive, initialProgress, onProgress,
   const [showPageBar, setShowPageBar] = useState(() => localStorage.getItem(PAGEBAR_VISIBLE_KEY) === "1");
   const containerRef = useRef<HTMLDivElement>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
+  const openFileInputRef = useRef<HTMLInputElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const lastWheelRef = useRef(0);
   const pendingScrollRef = useRef<"top" | "bottom" | null>(null);
@@ -381,12 +383,26 @@ export default function Reader({ fileName, archive, initialProgress, onProgress,
 
   return (
     <div className="reader" ref={containerRef}>
+      <input
+        ref={openFileInputRef}
+        type="file"
+        accept=".cbz,.zip,.cbr,.rar"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onOpenFile(file);
+          e.target.value = "";
+        }}
+      />
       <header className="toolbar">
         <span className="toolbar__title" title={fileName}>
           {fileName}
         </span>
         <div className="toolbar__menus">
           <ToolbarMenu label="Fichier">
+            <button type="button" onClick={() => openFileInputRef.current?.click()}>
+              Ouvrir un fichier…
+            </button>
             <button type="button" onClick={onClose}>
               Fermer
             </button>

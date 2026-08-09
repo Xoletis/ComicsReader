@@ -79,11 +79,13 @@ export default function App() {
       </div>
       {archive && file && (
         <Reader
+          key={`${file.name}:${file.size}`}
           fileName={file.name}
           archive={archive}
           initialProgress={loadProgress(file)}
           onProgress={handleProgress}
           onClose={handleClose}
+          onOpenFile={handleFile}
         />
       )}
       {openingName && (
