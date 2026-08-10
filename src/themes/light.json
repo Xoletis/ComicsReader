@@ -1,0 +1,32 @@
+{
+  "id": "light",
+  "name": "Clair",
+  "colors": {
+    "bg": "#f4f4f5",
+    "bgAlt": "#ffffff",
+    "bgModal": "#ffffff",
+    "bgPanel": "#eceef1",
+    "bgInset": "#e4e6ea",
+    "bgBlack": "#d9d9d9",
+    "surface": "#e8e8e8",
+    "surfaceHover": "#dcdcdc",
+    "surfaceHover2": "#d4d4d4",
+    "accentBg": "#dce8fc",
+    "accentBorder": "#b8d0f5",
+    "border": "#d0d0d0",
+    "accent": "#3266c2",
+    "accentHover": "#2a5aad",
+    "accentText": "#2a5aad",
+    "accentTextSoft": "#1a3a66",
+    "text": "#1a1a1a",
+    "textStrong": "#000000",
+    "textSecondary": "#333333",
+    "textMuted": "#555555",
+    "textDim": "#707070",
+    "textDimmer": "#808080",
+    "textFaint": "#888888",
+    "danger": "#d64545",
+    "dangerStrong": "#c23a3a",
+    "dangerBorder": "#c23a3a"
+  }
+}

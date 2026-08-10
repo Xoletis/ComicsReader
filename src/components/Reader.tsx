@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { OpenedArchive } from "../lib/archive";
 import { ReaderProgress, ZoomMode } from "../lib/progress";
-import { buildKeyToActionMap, loadShortcutOverrides, ShortcutMap } from "../lib/shortcuts";
+import { buildComboToActionMap, comboFromEvent, loadShortcutOverrides, ShortcutOverrides } from "../lib/shortcuts";
 import { buildSpreads, findSpreadIndex } from "../lib/spreads";
 import ReaderThumbnails from "./ReaderThumbnails";
-import ShortcutsModal from "./ShortcutsModal";
+import SettingsModal from "./SettingsModal";
 import ToolbarMenu from "./ToolbarMenu";
 
 interface Props {
@@ -42,8 +42,8 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
   // Hidden by default: the page count/input/slider live in the bottom bar
   // instead of always taking up space in the toolbar.
   const [showPageBar, setShowPageBar] = useState(() => localStorage.getItem(PAGEBAR_VISIBLE_KEY) === "1");
-  const [showShortcuts, setShowShortcuts] = useState(false);
-  const [shortcutOverrides, setShortcutOverrides] = useState<ShortcutMap>(() => loadShortcutOverrides());
+  const [showSettings, setShowSettings] = useState(false);
+  const [shortcutOverrides, setShortcutOverrides] = useState<ShortcutOverrides>(() => loadShortcutOverrides());
   const containerRef = useRef<HTMLDivElement>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
   const openFileInputRef = useRef<HTMLInputElement>(null);
@@ -192,9 +192,9 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
     };
   }, [archive, pageIndex, currentSpread]);
 
-  // Every action a key can trigger, keyed by the same action ids used in
-  // lib/shortcuts.ts — the actual key each one fires on is looked up via
-  // keyToAction below, so customizing a shortcut never touches this map.
+  // Every action a key combo can trigger, keyed by the same action ids used
+  // in lib/shortcuts.ts — the actual combo each one fires on is looked up via
+  // comboToAction below, so customizing a shortcut never touches this map.
   const actionHandlers = useMemo<Record<string, () => void>>(
     () => ({
       nextPage: goNext,
@@ -215,13 +215,14 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
     [goNext, goPrev, goFirst, goLast, zoomIn, zoomOut, toggleFullscreen, toggleThumbnails, togglePageBar, onClose]
   );
 
-  const keyToAction = useMemo(() => buildKeyToActionMap(shortcutOverrides), [shortcutOverrides]);
+  const comboToAction = useMemo(() => buildComboToActionMap(shortcutOverrides), [shortcutOverrides]);
 
   useEffect(() => {
-    if (showShortcuts) return;
+    if (showSettings) return;
     function onKeyDown(e: KeyboardEvent) {
       if (document.activeElement instanceof HTMLInputElement) return;
-      const actionId = keyToAction.get(e.key);
+      const combo = comboFromEvent(e);
+      const actionId = combo && comboToAction.get(combo);
       const handler = actionId && actionHandlers[actionId];
       if (!handler) return;
       e.preventDefault();
@@ -229,7 +230,7 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [showShortcuts, keyToAction, actionHandlers]);
+  }, [showSettings, comboToAction, actionHandlers]);
 
   // Ctrl+wheel always zooms the comic page instead of the browser/WebView's
   // own page zoom — attached to the whole reader, not just the image
@@ -430,8 +431,9 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
             <button type="button" onClick={() => setZoom("fit-height")} className={zoom === "fit-height" ? "active" : ""}>
               Hauteur
             </button>
-            <button type="button" onClick={() => setShowShortcuts(true)}>
-              Raccourcis clavier…
+            <hr className="toolbar-menu__divider" />
+            <button type="button" onClick={() => setShowSettings(true)}>
+              Configuration…
             </button>
           </ToolbarMenu>
         </div>
@@ -582,8 +584,8 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
         </div>
       )}
 
-      {showShortcuts && (
-        <ShortcutsModal onClose={() => setShowShortcuts(false)} onChange={setShortcutOverrides} />
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} onShortcutsChange={setShortcutOverrides} />
       )}
     </div>
   );
