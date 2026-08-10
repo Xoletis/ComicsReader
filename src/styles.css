@@ -642,6 +642,52 @@ button.active {
   max-height: 80vh;
 }
 
+.modal--shortcuts {
+  width: min(420px, 90vw);
+  max-height: 80vh;
+}
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.shortcuts-list__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shortcuts-list__label {
+  flex: 1;
+  font-size: 0.9rem;
+  color: #ccc;
+}
+
+.shortcuts-list__key {
+  flex-shrink: 0;
+  min-width: 110px;
+  padding: 4px 10px;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.shortcuts-list__reset {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  background: transparent;
+  border-color: transparent;
+  color: #888;
+}
+
+.shortcuts-list__reset:hover:not(:disabled) {
+  background: #2a2a2a;
+  color: #eee;
+}
+
 .search-modal__input {
   padding: 10px 12px;
   background: #121212;
