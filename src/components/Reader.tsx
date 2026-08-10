@@ -436,6 +436,31 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
             </button>
           </ToolbarMenu>
         </div>
+        <div className="toolbar__nav-icons">
+          <button type="button" className="toolbar__icon-btn" onClick={goFirst} disabled={currentSpreadIdx === 0} aria-label="Première page" title="Première page">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="5" y1="4" x2="5" y2="20" />
+              <polygon points="19 4 9 12 19 20" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+          <button type="button" className="toolbar__icon-btn" onClick={goPrev} disabled={currentSpreadIdx === 0} aria-label="Page précédente" title="Page précédente">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 4 7 12 15 20" />
+            </svg>
+          </button>
+          <button type="button" className="toolbar__icon-btn" onClick={goNext} disabled={currentSpreadIdx === spreads.length - 1} aria-label="Page suivante" title="Page suivante">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 4 17 12 9 20" />
+            </svg>
+          </button>
+          <button type="button" className="toolbar__icon-btn" onClick={goLast} disabled={currentSpreadIdx === spreads.length - 1} aria-label="Dernière page" title="Dernière page">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="19" y1="4" x2="19" y2="20" />
+              <polygon points="5 4 15 12 5 20" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+        </div>
+        <span className="toolbar__separator" />
         <div className="toolbar__icons">
           <button
             type="button"
