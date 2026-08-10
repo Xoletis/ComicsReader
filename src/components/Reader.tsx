@@ -6,7 +6,6 @@ import ReaderThumbnails from "./ReaderThumbnails";
 import ToolbarMenu from "./ToolbarMenu";
 
 interface Props {
-  fileName: string;
   archive: OpenedArchive;
   initialProgress: ReaderProgress | null;
   onProgress: (progress: ReaderProgress) => void;
@@ -27,7 +26,7 @@ const KEEP_RADIUS = 5;
 const THUMBNAILS_VISIBLE_KEY = "cbreader:readerThumbnailsVisible";
 const PAGEBAR_VISIBLE_KEY = "cbreader:readerPageBarVisible";
 
-export default function Reader({ fileName, archive, initialProgress, onProgress, onClose, onOpenFile }: Props) {
+export default function Reader({ archive, initialProgress, onProgress, onClose, onOpenFile }: Props) {
   const [pageIndex, setPageIndex] = useState(() => Math.min(initialProgress?.pageIndex ?? 0, archive.pageCount - 1));
   const [zoom, setZoom] = useState<ZoomMode>(initialProgress?.zoom ?? "fit-width");
   const [doublePage, setDoublePage] = useState(initialProgress?.doublePage ?? false);
@@ -395,9 +394,6 @@ export default function Reader({ fileName, archive, initialProgress, onProgress,
         }}
       />
       <header className="toolbar">
-        <span className="toolbar__title" title={fileName}>
-          {fileName}
-        </span>
         <div className="toolbar__menus">
           <ToolbarMenu label="Fichier">
             <button type="button" onClick={() => openFileInputRef.current?.click()}>
@@ -441,6 +437,18 @@ export default function Reader({ fileName, archive, initialProgress, onProgress,
           </ToolbarMenu>
         </div>
         <div className="toolbar__icons">
+          <button
+            type="button"
+            className={`toolbar__icon-btn${doublePage ? " active" : ""}`}
+            onClick={() => setDoublePage((v) => !v)}
+            aria-label="Double page"
+            title="Double page"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="9" height="16" rx="1" />
+              <rect x="13" y="4" width="9" height="16" rx="1" />
+            </svg>
+          </button>
           <button
             type="button"
             className={`toolbar__icon-btn${fullscreen ? " active" : ""}`}

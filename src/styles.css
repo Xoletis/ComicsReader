@@ -876,14 +876,6 @@ button.active {
   flex-wrap: wrap;
 }
 
-.toolbar__title {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 220px;
-}
-
 .toolbar__menus {
   display: flex;
   align-items: center;
