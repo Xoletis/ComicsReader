@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { OpenedArchive } from "../lib/archive";
 import { ReaderProgress, ZoomMode } from "../lib/progress";
-import { buildComboToActionMap, comboFromEvent, loadShortcutOverrides, ShortcutOverrides } from "../lib/shortcuts";
+import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import { buildSpreads, findSpreadIndex } from "../lib/spreads";
 import ReaderThumbnails from "./ReaderThumbnails";
-import SettingsModal from "./SettingsModal";
 import ToolbarMenu from "./ToolbarMenu";
 
 interface Props {
@@ -13,6 +12,9 @@ interface Props {
   onProgress: (progress: ReaderProgress) => void;
   onClose: () => void;
   onOpenFile: (file: File) => void;
+  shortcutOverrides: ShortcutOverrides;
+  onOpenSettings: () => void;
+  settingsOpen: boolean;
 }
 
 const ZOOM_MIN = 25;
@@ -28,7 +30,16 @@ const KEEP_RADIUS = 5;
 const THUMBNAILS_VISIBLE_KEY = "cbreader:readerThumbnailsVisible";
 const PAGEBAR_VISIBLE_KEY = "cbreader:readerPageBarVisible";
 
-export default function Reader({ archive, initialProgress, onProgress, onClose, onOpenFile }: Props) {
+export default function Reader({
+  archive,
+  initialProgress,
+  onProgress,
+  onClose,
+  onOpenFile,
+  shortcutOverrides,
+  onOpenSettings,
+  settingsOpen,
+}: Props) {
   const [pageIndex, setPageIndex] = useState(() => Math.min(initialProgress?.pageIndex ?? 0, archive.pageCount - 1));
   const [zoom, setZoom] = useState<ZoomMode>(initialProgress?.zoom ?? "fit-width");
   const [doublePage, setDoublePage] = useState(initialProgress?.doublePage ?? false);
@@ -42,8 +53,6 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
   // Hidden by default: the page count/input/slider live in the bottom bar
   // instead of always taking up space in the toolbar.
   const [showPageBar, setShowPageBar] = useState(() => localStorage.getItem(PAGEBAR_VISIBLE_KEY) === "1");
-  const [showSettings, setShowSettings] = useState(false);
-  const [shortcutOverrides, setShortcutOverrides] = useState<ShortcutOverrides>(() => loadShortcutOverrides());
   const containerRef = useRef<HTMLDivElement>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
   const openFileInputRef = useRef<HTMLInputElement>(null);
@@ -218,7 +227,7 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
   const comboToAction = useMemo(() => buildComboToActionMap(shortcutOverrides), [shortcutOverrides]);
 
   useEffect(() => {
-    if (showSettings) return;
+    if (settingsOpen) return;
     function onKeyDown(e: KeyboardEvent) {
       if (document.activeElement instanceof HTMLInputElement) return;
       const combo = comboFromEvent(e);
@@ -230,7 +239,7 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [showSettings, comboToAction, actionHandlers]);
+  }, [settingsOpen, comboToAction, actionHandlers]);
 
   // Ctrl+wheel always zooms the comic page instead of the browser/WebView's
   // own page zoom — attached to the whole reader, not just the image
@@ -432,7 +441,7 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
               Hauteur
             </button>
             <hr className="toolbar-menu__divider" />
-            <button type="button" onClick={() => setShowSettings(true)}>
+            <button type="button" onClick={onOpenSettings}>
               Configuration…
             </button>
           </ToolbarMenu>
@@ -582,10 +591,6 @@ export default function Reader({ archive, initialProgress, onProgress, onClose, 
             aria-label="Curseur de page"
           />
         </div>
-      )}
-
-      {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} onShortcutsChange={setShortcutOverrides} />
       )}
     </div>
   );

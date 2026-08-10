@@ -243,6 +243,10 @@ button.active {
   font-size: 1.1rem;
 }
 
+.library__settings-btn {
+  margin-left: auto;
+}
+
 .library__folder-controls {
   display: flex;
   align-items: center;
@@ -480,7 +484,7 @@ button.active {
 }
 
 .comic-card--drag-over .comic-card__folder-icon {
-  filter: brightness(1.3) drop-shadow(0 0 6px rgba(74, 127, 214, 0.8));
+  filter: brightness(1.3) drop-shadow(0 0 6px var(--color-accent));
 }
 
 .comic-card--drag-over .comic-card__name {

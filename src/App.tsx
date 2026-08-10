@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Home from "./components/Home";
 import Reader from "./components/Reader";
+import SettingsModal from "./components/SettingsModal";
 import UpdateBanner from "./components/UpdateBanner";
 import { ArchiveSource, OpenedArchive, openArchive, UnsupportedFormatError } from "./lib/archive";
 import { watchDesktopFileOpen } from "./lib/desktopOpen";
 import { loadProgress, ReaderProgress, saveProgress } from "./lib/progress";
+import { loadShortcutOverrides, ShortcutOverrides } from "./lib/shortcuts";
 
 export default function App() {
   const [file, setFile] = useState<ArchiveSource | null>(null);
@@ -12,6 +14,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [libraryRefreshSignal, setLibraryRefreshSignal] = useState(0);
   const [openingName, setOpeningName] = useState<string | null>(null);
+  // Settings live here (not in Reader) so the theme/shortcuts editor is
+  // reachable from the library screen too, not just from inside an open comic.
+  const [showSettings, setShowSettings] = useState(false);
+  const [shortcutOverrides, setShortcutOverrides] = useState<ShortcutOverrides>(() => loadShortcutOverrides());
   const archiveRef = useRef<OpenedArchive | null>(null);
 
   useEffect(() => {
@@ -75,7 +81,12 @@ export default function App() {
   return (
     <>
       <div className={`app-layer ${archive ? "app-layer--hidden" : ""}`}>
-        <Home onFile={handleFile} error={error} libraryRefreshSignal={libraryRefreshSignal} />
+        <Home
+          onFile={handleFile}
+          error={error}
+          libraryRefreshSignal={libraryRefreshSignal}
+          onOpenSettings={() => setShowSettings(true)}
+        />
       </div>
       {archive && file && (
         <Reader
@@ -85,6 +96,9 @@ export default function App() {
           onProgress={handleProgress}
           onClose={handleClose}
           onOpenFile={handleFile}
+          shortcutOverrides={shortcutOverrides}
+          onOpenSettings={() => setShowSettings(true)}
+          settingsOpen={showSettings}
         />
       )}
       {openingName && (
@@ -94,6 +108,9 @@ export default function App() {
             Ouverture de « {openingName} »…
           </p>
         </div>
+      )}
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} onShortcutsChange={setShortcutOverrides} />
       )}
       <UpdateBanner />
     </>
