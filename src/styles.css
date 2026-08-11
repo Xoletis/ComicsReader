@@ -1,9 +1,11 @@
 /* Fallback palette only — the values that paint before src/lib/theme.ts has
    run (or if it fails to for some reason). The active theme is applied as
    inline custom properties on <html>, overriding these; see
-   src/lib/themeFile.ts (applyThemeColors) and src/themes/*.json for the
+   src/lib/themeFile.ts (applyThemeFile) and src/themes/*.json for the
    built-in themes expressed in the same file format a user's own custom
-   theme uses. */
+   theme uses. Icons aren't listed here separately — every icon is an inline
+   SVG using currentColor, so they follow --color-text/--color-accent
+   wherever they're drawn. */
 :root {
   --color-bg: #121212;
   --color-bg-alt: #1a1a1a;
@@ -31,6 +33,7 @@
   --color-danger: #ff6b6b;
   --color-danger-strong: #d64a4a;
   --color-danger-border: #a04a4a;
+  --font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 * {
@@ -45,7 +48,7 @@ body,
 }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-family);
   background: var(--color-bg);
   color: var(--color-text);
 }

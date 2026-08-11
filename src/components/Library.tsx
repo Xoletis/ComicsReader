@@ -21,6 +21,7 @@ import {
 } from "../lib/library";
 import { folderColorKey, loadFolderColors, saveFolderColor } from "../lib/folderColors";
 import { loadProgressByKey, ReaderProgress, renameProgressKey } from "../lib/progress";
+import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import FolderColorModal from "./FolderColorModal";
 import FolderIcon from "./FolderIcon";
 import InfoModal from "./InfoModal";
@@ -39,6 +40,8 @@ interface Props {
   onOpenFile: (file: File) => void;
   refreshSignal: number;
   onOpenSettings: () => void;
+  shortcutOverrides: ShortcutOverrides;
+  active: boolean;
 }
 
 interface MenuTarget {
@@ -57,7 +60,7 @@ function parseKey(key: string): MoveItem {
   return { name, isDirectory };
 }
 
-export default function Library({ onOpenFile, refreshSignal, onOpenSettings }: Props) {
+export default function Library({ onOpenFile, refreshSignal, onOpenSettings, shortcutOverrides, active }: Props) {
   const [status, setStatus] = useState<Status>("checking");
   const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [path, setPath] = useState<PathEntry[]>([]);
@@ -723,6 +726,44 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings }: P
     },
     [currentHandle, moveItems, refreshEntries]
   );
+
+  const libraryActionHandlers = useMemo<Record<string, () => void>>(
+    () => ({
+      refreshLibrary: handleRefresh,
+      newFolder: () => setCreatingFolder(true),
+      searchLibrary: () => setSearchOpen(true),
+      toggleLibraryTree: toggleTree,
+      moveSelection: startBulkMove,
+      deleteSelection: handleBulkDelete,
+    }),
+    [handleRefresh, toggleTree, startBulkMove, handleBulkDelete]
+  );
+
+  const comboToAction = useMemo(() => buildComboToActionMap(shortcutOverrides), [shortcutOverrides]);
+
+  // Any overlay that owns its own text input or confirmation flow suppresses
+  // these — otherwise, say, typing "n" while renaming something would also
+  // pop open "new folder" behind it. Library.tsx stays mounted (just hidden)
+  // while the reader is open (see App.tsx), so `active` additionally makes
+  // sure a key pressed while reading never fires a library action no one can
+  // see happen.
+  const anyOverlayOpen =
+    !!menuFor || !!renameTarget || !!moveItems || creatingFolder || !!colorTarget || !!infoTarget || !!contextMenu || searchOpen;
+
+  useEffect(() => {
+    if (!active || status !== "connected" || anyOverlayOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (document.activeElement instanceof HTMLInputElement) return;
+      const combo = comboFromEvent(e);
+      const actionId = combo && comboToAction.get(combo);
+      const handler = actionId && libraryActionHandlers[actionId];
+      if (!handler) return;
+      e.preventDefault();
+      handler();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active, status, anyOverlayOpen, comboToAction, libraryActionHandlers]);
 
   return (
     <section

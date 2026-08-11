@@ -37,7 +37,13 @@ export interface ThemeFile {
   id: string;
   name: string;
   colors: ThemeColors;
+  /** CSS font-family stack, e.g. "'Fira Code', monospace". Optional — falls
+   *  back to the app's default system font stack when omitted, so existing
+   *  theme files written before this field existed still validate. */
+  font?: string;
 }
+
+export const DEFAULT_FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
 const COLOR_KEYS: (keyof ThemeColors)[] = [
   "bg",
@@ -103,18 +109,24 @@ export function isValidThemeFile(value: unknown): value is ThemeFile {
   if (typeof v.id !== "string" || !v.id.trim()) return false;
   if (typeof v.name !== "string" || !v.name.trim()) return false;
   if (!v.colors || typeof v.colors !== "object") return false;
+  if (v.font !== undefined && (typeof v.font !== "string" || !v.font.trim())) return false;
   const colors = v.colors as Record<string, unknown>;
   return COLOR_KEYS.every((key) => typeof colors[key] === "string" && colors[key] !== "");
 }
 
 // Applied as inline custom properties on <html> rather than swapping a CSS
-// class — this is what lets an arbitrary, never-seen-at-build-time JSON file
-// re-theme the app, not just a fixed set of classes baked into styles.css.
-export function applyThemeColors(colors: ThemeColors): void {
+// class/stylesheet — this is what lets an arbitrary, never-seen-at-build-time
+// JSON file re-theme the app, not just a fixed set of classes baked into
+// styles.css. Covers everything a theme controls: colors *and* font (icons
+// aren't listed separately because every icon in the app is an inline SVG
+// using stroke/fill="currentColor", so they already follow --color-text/
+// --color-accent wherever they're drawn — no separate variable needed).
+export function applyThemeFile(theme: ThemeFile): void {
   const root = document.documentElement.style;
   for (const key of COLOR_KEYS) {
-    root.setProperty(CSS_VAR_NAMES[key], colors[key]);
+    root.setProperty(CSS_VAR_NAMES[key], theme.colors[key]);
   }
+  root.setProperty("--font-family", theme.font ?? DEFAULT_FONT);
 }
 
 // Built-in themes are just JSON files under src/themes/, told apart from

@@ -25,6 +25,12 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   { id: "fitWidth", category: "Options", label: "Zoom largeur", defaultKey: "w" },
   { id: "fitHeight", category: "Options", label: "Zoom hauteur", defaultKey: "h" },
   { id: "toggleFullscreen", category: "Options", label: "Plein écran", defaultKey: "f" },
+  { id: "refreshLibrary", category: "Bibliothèque", label: "Actualiser", defaultKey: "r" },
+  { id: "newFolder", category: "Bibliothèque", label: "Nouveau dossier", defaultKey: "n" },
+  { id: "searchLibrary", category: "Bibliothèque", label: "Rechercher", defaultKey: "s" },
+  { id: "toggleLibraryTree", category: "Bibliothèque", label: "Arborescence", defaultKey: "a" },
+  { id: "moveSelection", category: "Bibliothèque", label: "Déplacer la sélection", defaultKey: "m" },
+  { id: "deleteSelection", category: "Bibliothèque", label: "Supprimer la sélection", defaultKey: "Delete" },
 ];
 
 export interface ShortcutBinding {
@@ -67,6 +73,7 @@ const KEY_LABELS: Record<string, string> = {
   PageUp: "Page préc.",
   PageDown: "Page suiv.",
   Tab: "Tab",
+  Delete: "Suppr",
 };
 
 // The single source of truth for how a key is displayed *and* matched: a raw

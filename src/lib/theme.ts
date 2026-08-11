@@ -1,4 +1,4 @@
-import { applyThemeColors, BUILT_IN_THEMES, ThemeFile } from "./themeFile";
+import { applyThemeFile, BUILT_IN_THEMES, ThemeFile } from "./themeFile";
 
 const STORAGE_KEY = "cbreader:activeTheme";
 
@@ -26,5 +26,5 @@ export function saveActiveTheme(theme: ThemeFile): void {
 }
 
 export function applyTheme(theme: ThemeFile): void {
-  applyThemeColors(theme.colors);
+  applyThemeFile(theme);
 }

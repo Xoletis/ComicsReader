@@ -86,6 +86,8 @@ export default function App() {
           error={error}
           libraryRefreshSignal={libraryRefreshSignal}
           onOpenSettings={() => setShowSettings(true)}
+          shortcutOverrides={shortcutOverrides}
+          active={!archive}
         />
       </div>
       {archive && file && (
