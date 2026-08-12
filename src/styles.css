@@ -757,10 +757,9 @@ button.active {
   font-size: 0.85em;
 }
 
-.appearance-tab__folder-controls {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+.appearance-tab .info-list__location {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .shortcuts-editor {

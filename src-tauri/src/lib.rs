@@ -34,6 +34,7 @@ pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
       // A second launch (e.g. double-clicking another comic while the app is
       // already open) is redirected here instead of opening a new window.

@@ -1,94 +1,36 @@
-import { useCallback, useEffect, useState } from "react";
-import { isFileSystemAccessSupported } from "../lib/library";
+import { useEffect, useState } from "react";
 import { applyTheme, saveActiveTheme } from "../lib/theme";
 import { BUILT_IN_THEMES, ThemeFile } from "../lib/themeFile";
-import {
-  clearThemesDirectoryHandle,
-  loadThemesDirectoryHandle,
-  pickThemesFolder,
-  queryThemesFolderPermission,
-  requestThemesFolderPermission,
-  scanThemesFolder,
-} from "../lib/themeFolder";
-
-type FolderStatus = "checking" | "unsupported" | "disconnected" | "needs-permission" | "connected";
+import { getThemesFolderLocation, isThemesFolderSupported, loadThemesFromFolder } from "../lib/themesFileStore";
 
 interface Props {
   theme: ThemeFile;
   onChange: (theme: ThemeFile) => void;
 }
 
-// The "Apparence" tab of SettingsModal: pick from the built-in themes, or
-// connect a folder of custom theme .json files (same format, hand-authored
-// by the user or copied in from anywhere) — every .json file directly inside
-// is auto-detected on connect/refresh, no per-file import step.
+// The "Apparence" tab of SettingsModal: pick a theme from the themes/ folder,
+// created automatically on first launch (see lib/themesFileStore.ts) and
+// seeded with one file per built-in theme — dropping in another .json file
+// with the same shape (or editing one of the existing ones) is how a user
+// customizes or creates a theme. No in-app picker: the app always knows
+// where this folder is. Not available in the plain web build, which has no
+// legitimate way to write files to a fixed location without a user gesture
+// each time — it just shows the bundled built-ins with no folder at all.
 export default function AppearanceTab({ theme, onChange }: Props) {
-  const [folderStatus, setFolderStatus] = useState<FolderStatus>("checking");
-  const [folderHandle, setFolderHandle] = useState<FileSystemDirectoryHandle | null>(null);
-  const [folderThemes, setFolderThemes] = useState<ThemeFile[]>([]);
-  const [folderError, setFolderError] = useState<string | null>(null);
+  const supported = isThemesFolderSupported();
+  const [themes, setThemes] = useState<ThemeFile[]>(BUILT_IN_THEMES);
+  const [folderPath, setFolderPath] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  const scan = useCallback(async (handle: FileSystemDirectoryHandle) => {
-    try {
-      setFolderThemes(await scanThemesFolder(handle));
-      setFolderError(null);
-    } catch (err) {
-      setFolderError(err instanceof Error ? err.message : "Impossible de lire ce dossier.");
-    }
-  }, []);
+  const refresh = async () => {
+    setThemes(await loadThemesFromFolder());
+  };
 
   useEffect(() => {
-    if (!isFileSystemAccessSupported()) {
-      setFolderStatus("unsupported");
-      return;
-    }
-    (async () => {
-      const handle = await loadThemesDirectoryHandle();
-      if (!handle) {
-        setFolderStatus("disconnected");
-        return;
-      }
-      setFolderHandle(handle);
-      const permission = await queryThemesFolderPermission(handle);
-      if (permission === "granted") {
-        setFolderStatus("connected");
-        await scan(handle);
-      } else {
-        setFolderStatus("needs-permission");
-      }
-    })();
-  }, [scan]);
-
-  const connectFolder = useCallback(async () => {
-    try {
-      const handle = await pickThemesFolder();
-      setFolderHandle(handle);
-      setFolderStatus("connected");
-      await scan(handle);
-    } catch {
-      // picker cancelled — leave status as-is
-    }
-  }, [scan]);
-
-  const reconnectFolder = useCallback(async () => {
-    if (!folderHandle) return;
-    const permission = await requestThemesFolderPermission(folderHandle);
-    if (permission === "granted") {
-      setFolderStatus("connected");
-      await scan(folderHandle);
-    }
-  }, [folderHandle, scan]);
-
-  const disconnectFolder = useCallback(async () => {
-    await clearThemesDirectoryHandle();
-    setFolderHandle(null);
-    setFolderThemes([]);
-    setFolderStatus("disconnected");
-  }, []);
-
-  const refresh = useCallback(() => {
-    if (folderHandle) void scan(folderHandle);
-  }, [folderHandle, scan]);
+    if (!supported) return;
+    void refresh();
+    void getThemesFolderLocation().then(setFolderPath);
+  }, [supported]);
 
   const select = (next: ThemeFile) => {
     applyTheme(next);
@@ -96,60 +38,54 @@ export default function AppearanceTab({ theme, onChange }: Props) {
     onChange(next);
   };
 
+  const copyPath = async () => {
+    if (!folderPath) return;
+    try {
+      await navigator.clipboard.writeText(folderPath);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // presse-papiers indisponible - on ignore silencieusement
+    }
+  };
+
   const isActive = (t: ThemeFile) => t.id === theme.id && t.name === theme.name;
 
   return (
     <div className="appearance-tab">
-      <label className="shortcuts-detail__label">Thèmes intégrés</label>
+      <label className="shortcuts-detail__label">Thèmes</label>
       <div className="appearance-tab__options">
-        {BUILT_IN_THEMES.map((t) => (
+        {themes.map((t) => (
           <ThemeSwatch key={t.id} theme={t} active={isActive(t)} onClick={() => select(t)} />
         ))}
       </div>
 
-      <label className="shortcuts-detail__label">Dossier de thèmes personnalisés</label>
-      {folderStatus === "unsupported" && (
-        <p className="appearance-tab__hint">
-          Non disponible sur ce navigateur (nécessite Chrome, Edge...). Copiez vos thèmes dans{" "}
-          <code>src/themes/</code> à la place.
-        </p>
-      )}
-      {folderStatus === "checking" && <p className="appearance-tab__hint">Vérification…</p>}
-      {folderStatus === "disconnected" && (
-        <button type="button" onClick={connectFolder}>
-          Connecter un dossier de thèmes…
-        </button>
-      )}
-      {folderStatus === "needs-permission" && (
-        <button type="button" onClick={reconnectFolder}>
-          Reconnecter le dossier de thèmes
-        </button>
-      )}
-      {folderStatus === "connected" && (
+      {supported ? (
         <>
-          <div className="appearance-tab__folder-controls">
-            <button type="button" onClick={refresh}>
-              Actualiser
-            </button>
-            <button type="button" onClick={connectFolder}>
-              Changer de dossier
-            </button>
-            <button type="button" onClick={disconnectFolder}>
-              Déconnecter
-            </button>
-          </div>
-          {folderError && <p className="modal__error">{folderError}</p>}
-          {folderThemes.length === 0 && !folderError && (
-            <p className="appearance-tab__hint">Aucun fichier .json de thème trouvé dans ce dossier.</p>
-          )}
-          {folderThemes.length > 0 && (
-            <div className="appearance-tab__options">
-              {folderThemes.map((t) => (
-                <ThemeSwatch key={t.id} theme={t} active={isActive(t)} onClick={() => select(t)} />
-              ))}
+          <label className="shortcuts-detail__label">Dossier de thèmes</label>
+          {folderPath && (
+            <div className="info-list__location">
+              <span className="info-list__path" title={folderPath}>
+                {folderPath}
+              </span>
+              <button type="button" onClick={copyPath}>
+                {copied ? "Copié !" : "Copier"}
+              </button>
             </div>
           )}
+          <p className="appearance-tab__hint">
+            Un fichier .json par thème. Ouvre-en un avec un éditeur de texte pour le modifier, ou ajoutes-en un
+            nouveau (même format) pour créer un thème — n'importe qui peut en ajouter autant qu'il veut. Reviens ici
+            et clique sur "Actualiser" après avoir enregistré.
+          </p>
+          <button type="button" onClick={refresh}>
+            Actualiser
+          </button>
         </>
+      ) : (
+        <p className="appearance-tab__hint">
+          La personnalisation par fichier n'est disponible que dans l'application de bureau.
+        </p>
       )}
     </div>
   );

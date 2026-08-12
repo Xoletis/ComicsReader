@@ -8,6 +8,9 @@
   "permissions": [
     "core:default",
     "updater:default",
-    "process:default"
+    "process:default",
+    "fs:allow-app-read-recursive",
+    "fs:allow-app-write-recursive",
+    "fs:allow-app-meta-recursive"
   ]
 }
