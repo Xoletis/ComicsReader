@@ -757,6 +757,41 @@ button.active {
   font-size: 0.85em;
 }
 
+.performance-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 360px;
+}
+
+.performance-tab__options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.performance-tab__option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.performance-tab__option.active {
+  border-color: var(--color-accent);
+}
+
+.performance-tab__option-label {
+  font-weight: 600;
+}
+
+.performance-tab__option-desc {
+  font-size: 0.85rem;
+  color: var(--color-text-dim);
+}
+
 .appearance-tab .info-list__location {
   max-width: 100%;
   overflow-x: auto;

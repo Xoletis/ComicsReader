@@ -1,18 +1,22 @@
 import { useEffect, useState } from "react";
 import { loadActiveTheme } from "../lib/theme";
 import { ThemeFile } from "../lib/themeFile";
+import { PerformancePreset } from "../lib/performance";
 import AppearanceTab from "./AppearanceTab";
+import PerformanceTab from "./PerformanceTab";
 import ShortcutsTab from "./ShortcutsTab";
 import { ShortcutOverrides } from "../lib/shortcuts";
 
 interface Props {
   onClose: () => void;
   onShortcutsChange: (overrides: ShortcutOverrides) => void;
+  performancePreset: PerformancePreset;
+  onPerformanceChange: (preset: PerformancePreset) => void;
 }
 
-type Tab = "appearance" | "shortcuts";
+type Tab = "appearance" | "shortcuts" | "performance";
 
-export default function SettingsModal({ onClose, onShortcutsChange }: Props) {
+export default function SettingsModal({ onClose, onShortcutsChange, performancePreset, onPerformanceChange }: Props) {
   const [tab, setTab] = useState<Tab>("appearance");
   const [theme, setTheme] = useState<ThemeFile>(() => loadActiveTheme());
   // Suspended while ShortcutsTab is capturing a key combo, so pressing
@@ -38,13 +42,14 @@ export default function SettingsModal({ onClose, onShortcutsChange }: Props) {
           <button type="button" className={`settings-tabs__tab${tab === "shortcuts" ? " active" : ""}`} onClick={() => setTab("shortcuts")}>
             Raccourcis
           </button>
+          <button type="button" className={`settings-tabs__tab${tab === "performance" ? " active" : ""}`} onClick={() => setTab("performance")}>
+            Performance
+          </button>
         </div>
 
-        {tab === "appearance" ? (
-          <AppearanceTab theme={theme} onChange={setTheme} />
-        ) : (
-          <ShortcutsTab onChange={onShortcutsChange} onCapturingChange={setCapturing} />
-        )}
+        {tab === "appearance" && <AppearanceTab theme={theme} onChange={setTheme} />}
+        {tab === "shortcuts" && <ShortcutsTab onChange={onShortcutsChange} onCapturingChange={setCapturing} />}
+        {tab === "performance" && <PerformanceTab preset={performancePreset} onChange={onPerformanceChange} />}
 
         <div className="modal__actions">
           <button type="button" className="active" onClick={onClose}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { OpenedArchive } from "../lib/archive";
+import { PerformancePreset } from "../lib/performance";
 import { ReaderProgress, ZoomMode } from "../lib/progress";
 import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import { buildSpreads, findSpreadIndex } from "../lib/spreads";
@@ -15,17 +16,12 @@ interface Props {
   shortcutOverrides: ShortcutOverrides;
   onOpenSettings: () => void;
   settingsOpen: boolean;
+  performancePreset: PerformancePreset;
 }
 
 const ZOOM_MIN = 25;
 const ZOOM_MAX = 400;
 const ZOOM_STEP = 10;
-
-// How many pages around the current one stay decoded in memory. Prefetching a
-// small window keeps navigation smooth, while eviction outside a slightly wider
-// window keeps memory bounded even for archives with hundreds of large pages.
-const PREFETCH_RADIUS = 2;
-const KEEP_RADIUS = 5;
 
 const THUMBNAILS_VISIBLE_KEY = "cbreader:readerThumbnailsVisible";
 const PAGEBAR_VISIBLE_KEY = "cbreader:readerPageBarVisible";
@@ -39,6 +35,7 @@ export default function Reader({
   shortcutOverrides,
   onOpenSettings,
   settingsOpen,
+  performancePreset,
 }: Props) {
   const [pageIndex, setPageIndex] = useState(() => Math.min(initialProgress?.pageIndex ?? 0, archive.pageCount - 1));
   const [zoom, setZoom] = useState<ZoomMode>(initialProgress?.zoom ?? "fit-width");
@@ -162,10 +159,10 @@ export default function Reader({
     let cancelled = false;
     const pageCount = archive.pageCount;
     const priority = currentSpread;
-    const radiusMin = Math.max(0, pageIndex - PREFETCH_RADIUS);
-    const radiusMax = Math.min(pageCount - 1, pageIndex + PREFETCH_RADIUS);
-    const keepMin = Math.max(0, pageIndex - KEEP_RADIUS);
-    const keepMax = Math.min(pageCount - 1, pageIndex + KEEP_RADIUS);
+    const radiusMin = Math.max(0, pageIndex - performancePreset.prefetchRadius);
+    const radiusMax = Math.min(pageCount - 1, pageIndex + performancePreset.prefetchRadius);
+    const keepMin = Math.max(0, pageIndex - performancePreset.keepRadius);
+    const keepMax = Math.min(pageCount - 1, pageIndex + performancePreset.keepRadius);
 
     archive.evictOutside(keepMin, keepMax);
 
@@ -199,7 +196,7 @@ export default function Reader({
     return () => {
       cancelled = true;
     };
-  }, [archive, pageIndex, currentSpread]);
+  }, [archive, pageIndex, currentSpread, performancePreset]);
 
   // Every action a key combo can trigger, keyed by the same action ids used
   // in lib/shortcuts.ts — the actual combo each one fires on is looked up via

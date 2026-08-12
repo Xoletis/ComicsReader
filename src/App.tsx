@@ -7,6 +7,7 @@ import { ArchiveSource, OpenedArchive, openArchive, UnsupportedFormatError } fro
 import { watchDesktopFileOpen } from "./lib/desktopOpen";
 import { loadProgress, ReaderProgress, saveProgress } from "./lib/progress";
 import { loadShortcutOverrides, ShortcutOverrides } from "./lib/shortcuts";
+import { loadPerformancePreset, PerformancePreset } from "./lib/performance";
 
 export default function App() {
   const [file, setFile] = useState<ArchiveSource | null>(null);
@@ -18,6 +19,7 @@ export default function App() {
   // reachable from the library screen too, not just from inside an open comic.
   const [showSettings, setShowSettings] = useState(false);
   const [shortcutOverrides, setShortcutOverrides] = useState<ShortcutOverrides>(() => loadShortcutOverrides());
+  const [performancePreset, setPerformancePreset] = useState<PerformancePreset>(() => loadPerformancePreset());
   const archiveRef = useRef<OpenedArchive | null>(null);
 
   useEffect(() => {
@@ -101,6 +103,7 @@ export default function App() {
           shortcutOverrides={shortcutOverrides}
           onOpenSettings={() => setShowSettings(true)}
           settingsOpen={showSettings}
+          performancePreset={performancePreset}
         />
       )}
       {openingName && (
@@ -112,7 +115,12 @@ export default function App() {
         </div>
       )}
       {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} onShortcutsChange={setShortcutOverrides} />
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          onShortcutsChange={setShortcutOverrides}
+          performancePreset={performancePreset}
+          onPerformanceChange={setPerformancePreset}
+        />
       )}
       <UpdateBanner />
     </>
