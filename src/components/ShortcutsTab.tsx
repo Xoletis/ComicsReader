@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   comboFromEvent,
   effectiveBinding,
+  isValidShortcutOverrides,
   loadShortcutOverrides,
   saveShortcutOverrides,
   SHORTCUT_ACTIONS,
@@ -26,6 +27,8 @@ export default function ShortcutsTab({ onChange, onCapturingChange }: Props) {
   const [activeSection, setActiveSection] = useState<Section>("primary");
   const [listening, setListening] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [importError, setImportError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     onCapturingChange(listening);
@@ -80,6 +83,30 @@ export default function ShortcutsTab({ onChange, onCapturingChange }: Props) {
   };
 
   const resetAll = () => commit({});
+
+  const exportShortcuts = () => {
+    const blob = new Blob([JSON.stringify(overrides, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "cbreader-raccourcis.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importShortcuts = async (file: File) => {
+    try {
+      const parsed = JSON.parse(await file.text());
+      if (!isValidShortcutOverrides(parsed)) {
+        setImportError("Ce fichier ne contient pas des raccourcis CBReader valides.");
+        return;
+      }
+      setImportError(null);
+      commit(parsed);
+    } catch {
+      setImportError("Impossible de lire ce fichier (JSON invalide).");
+    }
+  };
 
   // Captures the next key combo for whichever field (primary/secondary) was
   // last focused. Escape cancels the capture instead of being assignable —
@@ -204,7 +231,26 @@ export default function ShortcutsTab({ onChange, onCapturingChange }: Props) {
         </div>
       </div>
 
+      {importError && <p className="modal__error">{importError}</p>}
+
       <div className="modal__actions">
+        <button type="button" onClick={exportShortcuts}>
+          Exporter…
+        </button>
+        <button type="button" onClick={() => importInputRef.current?.click()}>
+          Importer…
+        </button>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void importShortcuts(file);
+            e.target.value = "";
+          }}
+        />
         <button type="button" onClick={resetAll} disabled={Object.keys(overrides).length === 0}>
           Réinitialiser les raccourcis
         </button>

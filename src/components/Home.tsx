@@ -1,3 +1,4 @@
+import { RecentFile } from "../lib/recentFiles";
 import { ShortcutOverrides } from "../lib/shortcuts";
 import FileDropZone from "./FileDropZone";
 import Library from "./Library";
@@ -7,18 +8,43 @@ interface Props {
   error: string | null;
   libraryRefreshSignal: number;
   onOpenSettings: () => void;
+  onOpenBookmarksOverview: () => void;
   shortcutOverrides: ShortcutOverrides;
   active: boolean;
+  recentFiles: RecentFile[];
+  onOpenRecent: (entry: RecentFile) => void;
+  onRemoveRecent: (entry: RecentFile) => void;
+  onClearRecent: () => void;
 }
 
-export default function Home({ onFile, error, libraryRefreshSignal, onOpenSettings, shortcutOverrides, active }: Props) {
+export default function Home({
+  onFile,
+  error,
+  libraryRefreshSignal,
+  onOpenSettings,
+  onOpenBookmarksOverview,
+  shortcutOverrides,
+  active,
+  recentFiles,
+  onOpenRecent,
+  onRemoveRecent,
+  onClearRecent,
+}: Props) {
   return (
     <div className="home">
-      <FileDropZone onFile={onFile} error={error} />
+      <FileDropZone
+        onFile={onFile}
+        error={error}
+        recentFiles={recentFiles}
+        onOpenRecent={onOpenRecent}
+        onRemoveRecent={onRemoveRecent}
+        onClearRecent={onClearRecent}
+      />
       <Library
         onOpenFile={onFile}
         refreshSignal={libraryRefreshSignal}
         onOpenSettings={onOpenSettings}
+        onOpenBookmarksOverview={onOpenBookmarksOverview}
         shortcutOverrides={shortcutOverrides}
         active={active}
       />

@@ -12,6 +12,8 @@ export interface ShortcutAction {
 // matching the reader's own Fichier/Lire/Options toolbar menus.
 export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   { id: "openFile", category: "Fichier", label: "Ouvrir un fichier…", defaultKey: "o" },
+  { id: "showComicInfo", category: "Fichier", label: "Informations…", defaultKey: "i" },
+  { id: "exportCurrentPage", category: "Fichier", label: "Exporter la page courante", defaultKey: "x" },
   { id: "closeReader", category: "Fichier", label: "Fermer", defaultKey: "Escape" },
   { id: "nextPage", category: "Lire", label: "Page suivante", defaultKey: "ArrowRight" },
   { id: "prevPage", category: "Lire", label: "Page précédente", defaultKey: "ArrowLeft" },
@@ -20,11 +22,20 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   { id: "toggleDoublePage", category: "Lire", label: "Double page", defaultKey: "d" },
   { id: "toggleThumbnails", category: "Lire", label: "Vignettes", defaultKey: "t" },
   { id: "togglePageBar", category: "Lire", label: "Curseur de page", defaultKey: "c" },
+  { id: "toggleMangaMode", category: "Lire", label: "Mode manga (sens de lecture)", defaultKey: "g" },
+  { id: "toggleContinuousScroll", category: "Lire", label: "Défilement continu", defaultKey: "l" },
+  { id: "toggleBookmark", category: "Lire", label: "Marque-page sur cette page", defaultKey: "b" },
+  { id: "toggleBookmarkPanel", category: "Lire", label: "Panneau des marque-pages", defaultKey: "k" },
+  { id: "nextBookmark", category: "Lire", label: "Marque-page suivant", defaultKey: "]" },
+  { id: "prevBookmark", category: "Lire", label: "Marque-page précédent", defaultKey: "[" },
+  { id: "toggleSlideshow", category: "Lire", label: "Diaporama automatique", defaultKey: "j" },
   { id: "zoomIn", category: "Options", label: "Zoom avant", defaultKey: "+" },
   { id: "zoomOut", category: "Options", label: "Zoom arrière", defaultKey: "-" },
   { id: "fitWidth", category: "Options", label: "Zoom largeur", defaultKey: "w" },
   { id: "fitHeight", category: "Options", label: "Zoom hauteur", defaultKey: "h" },
   { id: "toggleFullscreen", category: "Options", label: "Plein écran", defaultKey: "f" },
+  { id: "rotatePage", category: "Options", label: "Pivoter la page", defaultKey: "p" },
+  { id: "rotatePageCCW", category: "Options", label: "Pivoter la page (sens inverse)", defaultKey: "u" },
   { id: "refreshLibrary", category: "Bibliothèque", label: "Actualiser", defaultKey: "r" },
   { id: "newFolder", category: "Bibliothèque", label: "Nouveau dossier", defaultKey: "n" },
   { id: "searchLibrary", category: "Bibliothèque", label: "Rechercher", defaultKey: "s" },
@@ -59,6 +70,23 @@ export function saveShortcutOverrides(overrides: ShortcutOverrides): void {
   } catch {
     // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
   }
+}
+
+// Guards an imported JSON file before it replaces the live overrides: every
+// key must be a real action id, and every value must have the exact
+// {primary, secondary} shape — anything else (a stray field, a wrong type,
+// an unrelated JSON file) is rejected outright rather than partially applied.
+export function isValidShortcutOverrides(value: unknown): value is ShortcutOverrides {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const knownIds = new Set(SHORTCUT_ACTIONS.map((a) => a.id));
+  for (const [id, binding] of Object.entries(value as Record<string, unknown>)) {
+    if (!knownIds.has(id)) return false;
+    if (!binding || typeof binding !== "object") return false;
+    const { primary, secondary } = binding as Record<string, unknown>;
+    if (primary !== null && typeof primary !== "string") return false;
+    if (!Array.isArray(secondary) || !secondary.every((c) => typeof c === "string")) return false;
+  }
+  return true;
 }
 
 const KEY_LABELS: Record<string, string> = {

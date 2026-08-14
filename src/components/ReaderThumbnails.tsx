@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { OpenedArchive } from "../lib/archive";
+import { Bookmark, BOOKMARK_COLOR_HEX } from "../lib/bookmarks";
 
 interface Props {
   archive: OpenedArchive;
   currentIndex: number;
+  bookmarks: Bookmark[];
   onSelect: (index: number) => void;
   onClose: () => void;
 }
 
-export default function ReaderThumbnails({ archive, currentIndex, onSelect, onClose }: Props) {
+export default function ReaderThumbnails({ archive, currentIndex, bookmarks, onSelect, onClose }: Props) {
+  const bookmarkByPage = new Map(bookmarks.map((b) => [b.pageIndex, b]));
   const [, bumpVersion] = useReducer((n: number) => n + 1, 0);
   const bodyRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -78,6 +81,7 @@ export default function ReaderThumbnails({ archive, currentIndex, onSelect, onCl
         {pages.map((index) => {
           const page = archive.peekPage(index);
           const isActive = index === currentIndex;
+          const bookmark = bookmarkByPage.get(index);
           return (
             <button
               key={index}
@@ -93,6 +97,13 @@ export default function ReaderThumbnails({ archive, currentIndex, onSelect, onCl
                   <span className="reader-thumbnails__error">!</span>
                 ) : (
                   <span className="reader-thumbnails__spinner" />
+                )}
+                {bookmark && (
+                  <span
+                    className="reader-thumbnails__bookmark-badge"
+                    style={{ background: BOOKMARK_COLOR_HEX[bookmark.color] }}
+                    title={bookmark.label}
+                  />
                 )}
               </span>
               <span className="reader-thumbnails__number">{index + 1}</span>

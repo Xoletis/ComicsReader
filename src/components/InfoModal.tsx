@@ -51,9 +51,18 @@ export default function InfoModal({ name, isDirectory, handle, pathNames, onClos
           try {
             const archive = await openArchive(file);
             if (!cancelled) {
+              const info = archive.comicInfo;
               setMetadata([
                 { label: "Format", value: archive.format.toUpperCase() },
                 { label: "Pages", value: String(archive.pageCount) },
+                ...(info?.series ? [{ label: "Série", value: info.number ? `${info.series} #${info.number}` : info.series }] : []),
+                ...(info?.title ? [{ label: "Titre", value: info.title }] : []),
+                ...(info?.writer ? [{ label: "Scénario", value: info.writer }] : []),
+                ...(info?.penciller ? [{ label: "Dessin", value: info.penciller }] : []),
+                ...(info?.publisher ? [{ label: "Éditeur", value: info.publisher }] : []),
+                ...(info?.year ? [{ label: "Année", value: [info.year, info.month, info.day].filter(Boolean).join("-") }] : []),
+                ...(info?.genre ? [{ label: "Genre", value: info.genre }] : []),
+                ...(info?.summary ? [{ label: "Résumé", value: info.summary }] : []),
               ]);
             }
             archive.dispose();

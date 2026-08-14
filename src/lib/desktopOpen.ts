@@ -30,7 +30,8 @@ class RemoteArchiveSource implements ArchiveSource {
   constructor(
     private readonly url: string,
     readonly name: string,
-    readonly size: number
+    readonly size: number,
+    readonly path: string
   ) {}
 
   arrayBuffer(): Promise<ArrayBuffer> {
@@ -78,10 +79,10 @@ async function fetchSize(url: string): Promise<number> {
   return parseInt(total, 10);
 }
 
-async function pathToSource(path: string): Promise<ArchiveSource> {
+export async function pathToSource(path: string): Promise<ArchiveSource> {
   const url = convertFileSrc(path);
   const size = await fetchSize(url);
-  return new RemoteArchiveSource(url, basename(path), size);
+  return new RemoteArchiveSource(url, basename(path), size, path);
 }
 
 // Module-level and never reset: the one-shot "was a file waiting at startup?"

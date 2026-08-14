@@ -1,10 +1,13 @@
 export type ZoomMode = "fit-width" | "fit-height" | number;
+export type Rotation = 0 | 90 | 180 | 270;
 
 export interface ReaderProgress {
   pageIndex: number;
   pageCount: number;
   zoom: ZoomMode;
   doublePage: boolean;
+  // Optional: absent on progress saved before rotation existed, treated as 0.
+  rotation?: Rotation;
 }
 
 const PREFIX = "cbreader:progress:";

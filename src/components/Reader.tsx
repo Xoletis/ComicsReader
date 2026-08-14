@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { OpenedArchive } from "../lib/archive";
+import { Bookmark, BOOKMARK_COLOR_HEX, BookmarkColor, defaultBookmark } from "../lib/bookmarks";
+import { COMFORT_FILTERS, ComfortFilterId } from "../lib/comfortFilter";
 import { PerformancePreset } from "../lib/performance";
-import { ReaderProgress, ZoomMode } from "../lib/progress";
+import { ReaderProgress, Rotation, ZoomMode } from "../lib/progress";
 import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import { buildSpreads, findSpreadIndex } from "../lib/spreads";
+import BookmarkPanel from "./BookmarkPanel";
+import ComicInfoModal from "./ComicInfoModal";
 import ReaderThumbnails from "./ReaderThumbnails";
 import ToolbarMenu from "./ToolbarMenu";
 
@@ -17,14 +21,21 @@ interface Props {
   onOpenSettings: () => void;
   settingsOpen: boolean;
   performancePreset: PerformancePreset;
+  comfortFilter: ComfortFilterId;
+  initialBookmarks: Bookmark[];
+  onBookmarksChange: (bookmarks: Bookmark[]) => void;
 }
 
 const ZOOM_MIN = 25;
 const ZOOM_MAX = 400;
 const ZOOM_STEP = 10;
+const SLIDESHOW_INTERVAL_MS = 4000;
 
 const THUMBNAILS_VISIBLE_KEY = "cbreader:readerThumbnailsVisible";
 const PAGEBAR_VISIBLE_KEY = "cbreader:readerPageBarVisible";
+const MANGA_MODE_KEY = "cbreader:mangaMode";
+const CONTINUOUS_SCROLL_KEY = "cbreader:continuousScroll";
+const BOOKMARK_PANEL_VISIBLE_KEY = "cbreader:readerBookmarkPanelVisible";
 
 export default function Reader({
   archive,
@@ -36,6 +47,9 @@ export default function Reader({
   onOpenSettings,
   settingsOpen,
   performancePreset,
+  comfortFilter,
+  initialBookmarks,
+  onBookmarksChange,
 }: Props) {
   const [pageIndex, setPageIndex] = useState(() => Math.min(initialProgress?.pageIndex ?? 0, archive.pageCount - 1));
   const [zoom, setZoom] = useState<ZoomMode>(initialProgress?.zoom ?? "fit-width");
@@ -50,6 +64,13 @@ export default function Reader({
   // Hidden by default: the page count/input/slider live in the bottom bar
   // instead of always taking up space in the toolbar.
   const [showPageBar, setShowPageBar] = useState(() => localStorage.getItem(PAGEBAR_VISIBLE_KEY) === "1");
+  const [mangaMode, setMangaMode] = useState(() => localStorage.getItem(MANGA_MODE_KEY) === "1");
+  const [continuousScroll, setContinuousScroll] = useState(() => localStorage.getItem(CONTINUOUS_SCROLL_KEY) === "1");
+  const [rotation, setRotation] = useState<Rotation>(initialProgress?.rotation ?? 0);
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks);
+  const [showBookmarkPanel, setShowBookmarkPanel] = useState(() => localStorage.getItem(BOOKMARK_PANEL_VISIBLE_KEY) === "1");
+  const [showInfo, setShowInfo] = useState(false);
+  const [slideshowActive, setSlideshowActive] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
   const openFileInputRef = useRef<HTMLInputElement>(null);
@@ -58,23 +79,58 @@ export default function Reader({
   const pendingScrollRef = useRef<"top" | "bottom" | null>(null);
   const panRef = useRef<{ pointerId: number; startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const zoomAnchorRef = useRef<{ mouseX: number; mouseY: number; fractionX: number; fractionY: number } | null>(null);
+  // Continuous-scroll mode: DOM nodes for every page (for scrollIntoView) and
+  // the pending target of an explicit navigation (goNext/thumbnail click/...)
+  // so the scroll-restore effect knows to jump there instead of leaving the
+  // observer-driven pageIndex update as the only signal.
+  const pageElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
+  const scrollRequestRef = useRef<number | null>(null);
 
   const spreads = useMemo(() => buildSpreads(archive.pageCount, doublePage), [archive.pageCount, doublePage]);
   const currentSpreadIdx = findSpreadIndex(spreads, pageIndex);
   const currentSpread = spreads[currentSpreadIdx] ?? [0];
 
+  // Jumps to an explicit page (thumbnail click, page-bar input/slider,
+  // first/last) — in continuous-scroll mode this also queues a scrollIntoView
+  // so the viewport actually moves there, not just the tracked pageIndex.
+  const navigateTo = useCallback(
+    (index: number) => {
+      const clamped = Math.min(Math.max(index, 0), archive.pageCount - 1);
+      setPageIndex(clamped);
+      if (continuousScroll) scrollRequestRef.current = clamped;
+    },
+    [continuousScroll, archive.pageCount]
+  );
+
+  // In continuous-scroll mode there are no spreads to step through — every
+  // page is already on screen, so "next/prev" just moves the tracked index by
+  // one and scrolls there. In paged mode, navigation steps by spread instead.
   const goNext = useCallback(() => {
+    if (continuousScroll) {
+      navigateTo(pageIndex + 1);
+      return;
+    }
     const idx = findSpreadIndex(spreads, pageIndex);
     if (idx < spreads.length - 1) setPageIndex(spreads[idx + 1][0]);
-  }, [spreads, pageIndex]);
+  }, [continuousScroll, navigateTo, spreads, pageIndex]);
 
   const goPrev = useCallback(() => {
+    if (continuousScroll) {
+      navigateTo(pageIndex - 1);
+      return;
+    }
     const idx = findSpreadIndex(spreads, pageIndex);
     if (idx > 0) setPageIndex(spreads[idx - 1][0]);
-  }, [spreads, pageIndex]);
+  }, [continuousScroll, navigateTo, spreads, pageIndex]);
 
-  const goFirst = useCallback(() => setPageIndex(0), []);
-  const goLast = useCallback(() => setPageIndex(spreads[spreads.length - 1]?.[0] ?? 0), [spreads]);
+  const goFirst = useCallback(() => navigateTo(0), [navigateTo]);
+  const goLast = useCallback(() => {
+    if (continuousScroll) {
+      navigateTo(archive.pageCount - 1);
+      return;
+    }
+    setPageIndex(spreads[spreads.length - 1]?.[0] ?? 0);
+  }, [continuousScroll, navigateTo, spreads, archive.pageCount]);
 
   // Keeps the page-number field showing the current page whenever navigation
   // happens some other way (buttons, keyboard, clicking a nav zone...).
@@ -89,9 +145,9 @@ export default function Reader({
       return;
     }
     const clamped = Math.min(Math.max(parsed, 1), archive.pageCount);
-    setPageIndex(clamped - 1);
+    navigateTo(clamped - 1);
     setPageInput(String(clamped));
-  }, [pageInput, pageIndex, archive.pageCount]);
+  }, [pageInput, pageIndex, archive.pageCount, navigateTo]);
 
   const zoomIn = useCallback(() => {
     setZoom((z) => Math.min(ZOOM_MAX, (typeof z === "number" ? z : 100) + ZOOM_STEP));
@@ -132,6 +188,40 @@ export default function Reader({
     }
   }, []);
 
+  const toggleMangaMode = useCallback(() => {
+    setMangaMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(MANGA_MODE_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleContinuousScroll = useCallback(() => {
+    setContinuousScroll((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(CONTINUOUS_SCROLL_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      return next;
+    });
+  }, []);
+
+  const rotatePage = useCallback(() => {
+    setRotation((r) => (((r + 90) % 360) as Rotation));
+  }, []);
+
+  const rotatePageCCW = useCallback(() => {
+    setRotation((r) => (((r + 270) % 360) as Rotation));
+  }, []);
+
+  const resetRotation = useCallback(() => setRotation(0), []);
+
   useEffect(() => {
     const onChange = () => setFullscreen(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", onChange);
@@ -139,8 +229,86 @@ export default function Reader({
   }, []);
 
   useEffect(() => {
-    onProgress({ pageIndex, pageCount: archive.pageCount, zoom, doublePage });
-  }, [pageIndex, archive.pageCount, zoom, doublePage, onProgress]);
+    onProgress({ pageIndex, pageCount: archive.pageCount, zoom, doublePage, rotation });
+  }, [pageIndex, archive.pageCount, zoom, doublePage, rotation, onProgress]);
+
+  useEffect(() => {
+    onBookmarksChange(bookmarks);
+  }, [bookmarks, onBookmarksChange]);
+
+  const isBookmarked = bookmarks.some((b) => b.pageIndex === pageIndex);
+
+  const toggleBookmark = useCallback(() => {
+    setBookmarks((prev) =>
+      prev.some((b) => b.pageIndex === pageIndex) ? prev.filter((b) => b.pageIndex !== pageIndex) : [...prev, defaultBookmark(pageIndex)]
+    );
+  }, [pageIndex]);
+
+  const removeBookmark = useCallback((index: number) => {
+    setBookmarks((prev) => prev.filter((b) => b.pageIndex !== index));
+  }, []);
+
+  const renameBookmark = useCallback((index: number, label: string) => {
+    setBookmarks((prev) => prev.map((b) => (b.pageIndex === index ? { ...b, label } : b)));
+  }, []);
+
+  const setBookmarkColor = useCallback((index: number, color: BookmarkColor) => {
+    setBookmarks((prev) => prev.map((b) => (b.pageIndex === index ? { ...b, color } : b)));
+  }, []);
+
+  const toggleBookmarkPanel = useCallback(() => {
+    setShowBookmarkPanel((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(BOOKMARK_PANEL_VISIBLE_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      return next;
+    });
+  }, []);
+
+  // Jumps to the nearest bookmark strictly after/before the current page —
+  // skips over unbookmarked pages entirely, unlike goNext/goPrev.
+  const goToNextBookmark = useCallback(() => {
+    const next = bookmarks.map((b) => b.pageIndex).filter((p) => p > pageIndex).sort((a, b) => a - b)[0];
+    if (next !== undefined) navigateTo(next);
+  }, [bookmarks, pageIndex, navigateTo]);
+
+  const goToPrevBookmark = useCallback(() => {
+    const candidates = bookmarks.map((b) => b.pageIndex).filter((p) => p < pageIndex).sort((a, b) => a - b);
+    const prev = candidates[candidates.length - 1];
+    if (prev !== undefined) navigateTo(prev);
+  }, [bookmarks, pageIndex, navigateTo]);
+
+  const exportCurrentPage = useCallback(() => {
+    const page = archive.peekPage(pageIndex);
+    if (!page) return;
+    const ext = page.name.split(".").pop() || "png";
+    const a = document.createElement("a");
+    a.href = page.url;
+    a.download = `page_${String(pageIndex + 1).padStart(3, "0")}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [archive, pageIndex]);
+
+  const toggleSlideshow = useCallback(() => setSlideshowActive((v) => !v), []);
+
+  // Re-armed every time pageIndex changes (manual navigation or the timer's
+  // own previous tick alike), so a manual page turn while the slideshow is
+  // running restarts the countdown instead of firing early. Turns itself off
+  // at the last page/spread instead of looping.
+  useEffect(() => {
+    if (!slideshowActive) return;
+    const atEnd = continuousScroll ? pageIndex >= archive.pageCount - 1 : currentSpreadIdx === spreads.length - 1;
+    if (atEnd) {
+      setSlideshowActive(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => goNext(), SLIDESHOW_INTERVAL_MS);
+    return () => window.clearTimeout(timeout);
+  }, [slideshowActive, pageIndex, continuousScroll, archive.pageCount, currentSpreadIdx, spreads.length, goNext]);
 
   // Like CDisplayEx: render with the browser's fast default resample while
   // the zoom level is actively changing, then upgrade to a sharper filter a
@@ -203,8 +371,13 @@ export default function Reader({
   // comboToAction below, so customizing a shortcut never touches this map.
   const actionHandlers = useMemo<Record<string, () => void>>(
     () => ({
-      nextPage: goNext,
-      prevPage: goPrev,
+      // In manga mode, the physical Left/Right arrow keys (bound to
+      // prevPage/nextPage by default) are swapped so pressing the key that
+      // visually points "toward the next page" (left, in a right-to-left
+      // layout) actually advances — everything else (icon buttons, Home/End)
+      // keeps its literal meaning since those aren't tied to a physical side.
+      nextPage: mangaMode ? goPrev : goNext,
+      prevPage: mangaMode ? goNext : goPrev,
       firstPage: goFirst,
       lastPage: goLast,
       zoomIn,
@@ -215,16 +388,49 @@ export default function Reader({
       toggleFullscreen,
       toggleThumbnails,
       togglePageBar,
+      toggleMangaMode,
+      toggleContinuousScroll,
+      rotatePage,
+      rotatePageCCW,
+      toggleBookmark,
+      toggleBookmarkPanel,
+      nextBookmark: goToNextBookmark,
+      prevBookmark: goToPrevBookmark,
+      toggleSlideshow,
+      showComicInfo: () => setShowInfo(true),
+      exportCurrentPage,
       openFile: () => openFileInputRef.current?.click(),
       closeReader: onClose,
     }),
-    [goNext, goPrev, goFirst, goLast, zoomIn, zoomOut, toggleFullscreen, toggleThumbnails, togglePageBar, onClose]
+    [
+      mangaMode,
+      goNext,
+      goPrev,
+      goFirst,
+      goLast,
+      zoomIn,
+      zoomOut,
+      toggleFullscreen,
+      toggleThumbnails,
+      togglePageBar,
+      toggleMangaMode,
+      toggleContinuousScroll,
+      rotatePage,
+      rotatePageCCW,
+      toggleBookmark,
+      toggleBookmarkPanel,
+      goToNextBookmark,
+      goToPrevBookmark,
+      toggleSlideshow,
+      exportCurrentPage,
+      onClose,
+    ]
   );
 
   const comboToAction = useMemo(() => buildComboToActionMap(shortcutOverrides), [shortcutOverrides]);
 
   useEffect(() => {
-    if (settingsOpen) return;
+    if (settingsOpen || showInfo) return;
     function onKeyDown(e: KeyboardEvent) {
       if (document.activeElement instanceof HTMLInputElement) return;
       const combo = comboFromEvent(e);
@@ -236,7 +442,7 @@ export default function Reader({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [settingsOpen, comboToAction, actionHandlers]);
+  }, [settingsOpen, showInfo, comboToAction, actionHandlers]);
 
   // Ctrl+wheel always zooms the comic page instead of the browser/WebView's
   // own page zoom — attached to the whole reader, not just the image
@@ -301,7 +507,9 @@ export default function Reader({
   // spread) and never turns pages either.
   useEffect(() => {
     const el = viewportRef.current;
-    if (!el) return;
+    // Continuous scroll has no "edge" to turn a page at — the wheel just
+    // scrolls the stacked column natively, so this listener stays detached.
+    if (!el || continuousScroll) return;
     const onWheel = (e: WheelEvent) => {
       if (e.ctrlKey || Math.abs(e.deltaY) < 4) return;
       if (e.altKey) {
@@ -323,7 +531,7 @@ export default function Reader({
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [goNext, goPrev]);
+  }, [goNext, goPrev, continuousScroll]);
 
   // Applies the top/bottom landing spot queued by the wheel handler once the
   // new page has swapped in. useLayoutEffect (not a rAF/timeout) so it reads
@@ -335,6 +543,59 @@ export default function Reader({
     pendingScrollRef.current = null;
     el.scrollTop = pending === "top" ? 0 : el.scrollHeight;
   }, [pageIndex]);
+
+  // Continuous-scroll mode: tracks which page is most visible as the user
+  // scrolls the stacked column, and keeps it as the "current" pageIndex (for
+  // progress-saving, the thumbnails highlight, the page bar, and to drive
+  // which pages the prefetch effect above keeps loaded).
+  useEffect(() => {
+    if (!continuousScroll) return;
+    const root = viewportRef.current;
+    if (!root) return;
+    // A page image is usually taller than the viewport, so it often never
+    // crosses a coarse ratio threshold (e.g. 25%) even while it's clearly the
+    // most-visible one on screen — the observer firing is just used as the
+    // "something changed" signal, and the actual "which page is current" pick
+    // is a direct getBoundingClientRect measurement over every tracked page,
+    // not the (possibly stale/sparse) entries batch itself.
+    const pickCurrent = () => {
+      const rootRect = root.getBoundingClientRect();
+      let best: { index: number; visible: number } | null = null;
+      for (const [idx, el] of pageElsRef.current) {
+        const r = el.getBoundingClientRect();
+        const visible = Math.min(r.bottom, rootRect.bottom) - Math.max(r.top, rootRect.top);
+        if (visible > 0 && (!best || visible > best.visible)) best = { index: idx, visible };
+      }
+      if (best) setPageIndex(best.index);
+    };
+    const observer = new IntersectionObserver(pickCurrent, {
+      root,
+      threshold: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+    });
+    for (const el of pageElsRef.current.values()) observer.observe(el);
+    return () => observer.disconnect();
+  }, [continuousScroll, archive.pageCount]);
+
+  // Consumes a scroll request queued by navigateTo/goNext/goPrev while in
+  // continuous mode — a layout effect so it jumps before the browser paints,
+  // same reasoning as the top/bottom scroll-restore effect above.
+  useLayoutEffect(() => {
+    if (!continuousScroll) return;
+    const target = scrollRequestRef.current;
+    if (target === null) return;
+    scrollRequestRef.current = null;
+    pageElsRef.current.get(target)?.scrollIntoView({ block: "start" });
+  }, [pageIndex, continuousScroll]);
+
+  // Jumps to the current page once when continuous mode is switched on (e.g.
+  // resuming mid-comic) — kept separate from the scroll-request effect above
+  // so it only fires on the mode toggle itself, not on every subsequent
+  // observer-driven pageIndex update while already in continuous mode.
+  useEffect(() => {
+    if (!continuousScroll) return;
+    pageElsRef.current.get(pageIndex)?.scrollIntoView({ block: "start" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [continuousScroll]);
 
   // PDF-viewer-style hand-drag panning: click and drag the page to scroll it
   // when zoomed in past the viewport, instead of relying on scrollbars.
@@ -380,8 +641,26 @@ export default function Reader({
   }, []);
 
   const zoomLabel = typeof zoom === "number" ? `${zoom}%` : zoom === "fit-width" ? "Largeur" : "Hauteur";
-  const imageClass = `${typeof zoom === "number" ? "reader__image reader__image--scaled" : `reader__image reader__image--${zoom}`}${zoomSettled ? " reader__image--sharp" : ""}`;
-  const imageStyle = typeof zoom === "number" ? { width: `${zoom}%` } : undefined;
+  const filterCss = COMFORT_FILTERS.find((f) => f.id === comfortFilter)?.filter ?? undefined;
+  const rotationTransform = rotation !== 0 ? `rotate(${rotation}deg)` : undefined;
+  // A page rotated 90/270° swaps which screen axis its width/height fill —
+  // fit-width sizing (full container width) only still fits after rotation
+  // if it's applied as fit-height *before* the rotate() transform, and vice
+  // versa, so the fit mode used for sizing is swapped for sideways rotations.
+  const sideways = rotation === 90 || rotation === 270;
+  const sizingZoom: ZoomMode = sideways ? (zoom === "fit-width" ? "fit-height" : zoom === "fit-height" ? "fit-width" : zoom) : zoom;
+  const imageClass = `${typeof sizingZoom === "number" ? "reader__image reader__image--scaled" : `reader__image reader__image--${sizingZoom}`}${zoomSettled ? " reader__image--sharp" : ""}`;
+  const imageStyle: CSSProperties = {
+    ...(typeof zoom === "number" ? { width: `${zoom}%` } : {}),
+    ...(rotationTransform ? { transform: rotationTransform } : {}),
+    ...(filterCss ? { filter: filterCss } : {}),
+  };
+  const continuousImageClass = `reader__continuous-image${zoomSettled ? " reader__image--sharp" : ""}`;
+  const continuousImageStyle: CSSProperties = {
+    width: typeof zoom === "number" ? `${zoom}%` : "100%",
+    ...(rotationTransform ? { transform: rotationTransform } : {}),
+    ...(filterCss ? { filter: filterCss } : {}),
+  };
 
   return (
     <div className="reader" ref={containerRef}>
@@ -402,6 +681,13 @@ export default function Reader({
             <button type="button" onClick={() => openFileInputRef.current?.click()}>
               Ouvrir un fichier…
             </button>
+            <button type="button" onClick={() => setShowInfo(true)}>
+              Informations…
+            </button>
+            <button type="button" onClick={exportCurrentPage}>
+              Exporter la page courante
+            </button>
+            <hr className="toolbar-menu__divider" />
             <button type="button" onClick={onClose}>
               Fermer
             </button>
@@ -422,6 +708,29 @@ export default function Reader({
             <button type="button" onClick={togglePageBar} className={showPageBar ? "active" : ""}>
               Curseur de page
             </button>
+            <hr className="toolbar-menu__divider" />
+            <button type="button" onClick={toggleMangaMode} className={mangaMode ? "active" : ""}>
+              Mode manga (droite → gauche)
+            </button>
+            <button type="button" onClick={toggleContinuousScroll} className={continuousScroll ? "active" : ""}>
+              Défilement continu
+            </button>
+            <button type="button" onClick={toggleSlideshow} className={slideshowActive ? "active" : ""}>
+              Diaporama automatique
+            </button>
+            <hr className="toolbar-menu__divider" />
+            <button type="button" onClick={toggleBookmark} className={isBookmarked ? "active" : ""}>
+              {isBookmarked ? "Retirer le marque-page" : "Marque-page sur cette page"}
+            </button>
+            <button type="button" onClick={toggleBookmarkPanel} className={showBookmarkPanel ? "active" : ""}>
+              Panneau des marque-pages{bookmarks.length > 0 ? ` (${bookmarks.length})` : ""}
+            </button>
+            <button type="button" onClick={goToPrevBookmark} disabled={!bookmarks.some((b) => b.pageIndex < pageIndex)}>
+              ← Marque-page précédent
+            </button>
+            <button type="button" onClick={goToNextBookmark} disabled={!bookmarks.some((b) => b.pageIndex > pageIndex)}>
+              Marque-page suivant →
+            </button>
           </ToolbarMenu>
           <ToolbarMenu label="Options">
             <div className="toolbar-menu__label">Zoom : {zoomLabel}</div>
@@ -438,12 +747,33 @@ export default function Reader({
               Hauteur
             </button>
             <hr className="toolbar-menu__divider" />
+            <div className="toolbar-menu__label">Rotation{rotation ? ` : ${rotation}°` : ""}</div>
+            <button type="button" onClick={rotatePageCCW}>
+              ↺ Pivoter (-90°)
+            </button>
+            <button type="button" onClick={rotatePage}>
+              ↻ Pivoter (90°)
+            </button>
+            {rotation !== 0 && (
+              <button type="button" onClick={resetRotation}>
+                Réinitialiser la rotation
+              </button>
+            )}
+            <hr className="toolbar-menu__divider" />
             <button type="button" onClick={onOpenSettings}>
               Configuration…
             </button>
           </ToolbarMenu>
         </div>
-        <div className="toolbar__nav-icons">
+        {/* Mirrored horizontally in manga mode: since page order is still
+            First→Last left-to-right in the DOM, flipping the whole group
+            moves "Last" to the visual left and "First" to the visual right —
+            matching an RTL book's layout — and each icon mirrors along with
+            it (the chevrons end up pointing the intuitively-correct way) with
+            no change to which handler each button calls. This is what makes
+            manga mode visibly *do* something even outside double-page mode,
+            unlike the reader__spread reorder above which only shows there. */}
+        <div className="toolbar__nav-icons" style={mangaMode ? { transform: "scaleX(-1)" } : undefined}>
           <button type="button" className="toolbar__icon-btn" onClick={goFirst} disabled={currentSpreadIdx === 0} aria-label="Première page" title="Première page">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="5" y1="4" x2="5" y2="20" />
@@ -471,6 +801,18 @@ export default function Reader({
         <div className="toolbar__icons">
           <button
             type="button"
+            className={`toolbar__icon-btn${mangaMode ? " active" : ""}`}
+            onClick={toggleMangaMode}
+            aria-label="Mode manga (droite → gauche)"
+            title="Mode manga (droite → gauche)"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="14 4 6 12 14 20" />
+              <polyline points="20 4 12 12 20 20" />
+            </svg>
+          </button>
+          <button
+            type="button"
             className={`toolbar__icon-btn${doublePage ? " active" : ""}`}
             onClick={() => setDoublePage((v) => !v)}
             aria-label="Double page"
@@ -479,6 +821,61 @@ export default function Reader({
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="4" width="9" height="16" rx="1" />
               <rect x="13" y="4" width="9" height="16" rx="1" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={`toolbar__icon-btn${continuousScroll ? " active" : ""}`}
+            onClick={toggleContinuousScroll}
+            aria-label="Défilement continu"
+            title="Défilement continu"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="3" width="16" height="7" rx="1" />
+              <rect x="4" y="14" width="16" height="7" rx="1" />
+            </svg>
+          </button>
+          <span className="toolbar__separator" />
+          <button
+            type="button"
+            className={`toolbar__icon-btn${isBookmarked ? " active" : ""}`}
+            onClick={toggleBookmark}
+            aria-label={isBookmarked ? "Retirer le marque-page" : "Ajouter un marque-page"}
+            title={isBookmarked ? "Retirer le marque-page" : "Ajouter un marque-page"}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 3h12v18l-6-4-6 4V3z" fill={isBookmarked ? "currentColor" : "none"} />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={`toolbar__icon-btn${showBookmarkPanel ? " active" : ""}`}
+            onClick={toggleBookmarkPanel}
+            aria-label="Panneau des marque-pages"
+            title="Panneau des marque-pages"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 3h12v18l-6-4-6 4V3z" />
+              <line x1="9" y1="7" x2="15" y2="7" />
+            </svg>
+          </button>
+          <span className="toolbar__separator" />
+          <button
+            type="button"
+            className={`toolbar__icon-btn${slideshowActive ? " active" : ""}`}
+            onClick={toggleSlideshow}
+            aria-label="Diaporama automatique"
+            title="Diaporama automatique"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {slideshowActive ? (
+                <>
+                  <line x1="8" y1="4" x2="8" y2="20" />
+                  <line x1="16" y1="4" x2="16" y2="20" />
+                </>
+              ) : (
+                <polygon points="6 4 20 12 6 20" fill="currentColor" stroke="none" />
+              )}
             </svg>
           </button>
           <button
@@ -520,40 +917,98 @@ export default function Reader({
             onPointerUp={endViewportPan}
             onPointerCancel={endViewportPan}
           >
-            <div className="reader__spread">
-              {currentSpread.map((idx) => {
-                const page = archive.peekPage(idx);
-                if (page) {
+            {continuousScroll ? (
+              <div className="reader__continuous">
+                {Array.from({ length: archive.pageCount }, (_, idx) => {
+                  const page = archive.peekPage(idx);
                   return (
-                    <img
+                    <div
                       key={idx}
-                      src={page.url}
-                      alt={`Page ${idx + 1}`}
-                      className={imageClass}
-                      style={imageStyle}
-                      draggable={false}
-                    />
+                      className="reader__continuous-page"
+                      data-page-index={idx}
+                      ref={(el) => {
+                        if (el) pageElsRef.current.set(idx, el);
+                        else pageElsRef.current.delete(idx);
+                      }}
+                    >
+                      {page ? (
+                        <img
+                          src={page.url}
+                          alt={`Page ${idx + 1}`}
+                          className={continuousImageClass}
+                          style={continuousImageStyle}
+                          draggable={false}
+                        />
+                      ) : (
+                        <div className="reader__page-placeholder">
+                          {failedPages.has(idx) ? (
+                            <span className="reader__page-error">Erreur de chargement</span>
+                          ) : (
+                            <span className="reader__page-spinner" />
+                          )}
+                        </div>
+                      )}
+                    </div>
                   );
-                }
-                return (
-                  <div key={idx} className="reader__page-placeholder">
-                    {failedPages.has(idx) ? (
-                      <span className="reader__page-error">Erreur de chargement</span>
-                    ) : (
-                      <span className="reader__page-spinner" />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                })}
+              </div>
+            ) : (
+              // Manga mode reverses which physical page renders on which side
+              // (page N+1 left, N right) by reordering the DOM nodes
+              // themselves rather than flipping flex-direction: a reversed
+              // flex-direction shifts the overflow "start" edge to the other
+              // side, which the margin:auto overflow fix above doesn't
+              // account for — the hand-drag pan could no longer reach content
+              // overflowing that side. Reordering keeps a normal row layout,
+              // so scrolling/panning works exactly as in non-manga mode.
+              <div className="reader__spread">
+                {(mangaMode ? [...currentSpread].reverse() : currentSpread).map((idx) => {
+                  const page = archive.peekPage(idx);
+                  if (page) {
+                    return (
+                      <img
+                        key={idx}
+                        src={page.url}
+                        alt={`Page ${idx + 1}`}
+                        className={imageClass}
+                        style={imageStyle}
+                        draggable={false}
+                      />
+                    );
+                  }
+                  return (
+                    <div key={idx} className="reader__page-placeholder">
+                      {failedPages.has(idx) ? (
+                        <span className="reader__page-error">Erreur de chargement</span>
+                      ) : (
+                        <span className="reader__page-spinner" />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
         {showThumbnails && (
           <ReaderThumbnails
             archive={archive}
             currentIndex={pageIndex}
-            onSelect={setPageIndex}
+            bookmarks={bookmarks}
+            onSelect={navigateTo}
             onClose={toggleThumbnails}
+          />
+        )}
+        {showBookmarkPanel && (
+          <BookmarkPanel
+            archive={archive}
+            bookmarks={bookmarks}
+            currentIndex={pageIndex}
+            onSelect={navigateTo}
+            onRename={renameBookmark}
+            onColor={setBookmarkColor}
+            onRemove={removeBookmark}
+            onClose={toggleBookmarkPanel}
           />
         )}
       </div>
@@ -578,16 +1033,41 @@ export default function Reader({
             aria-label="Aller à la page"
           />
           <span className="reader__pagebar-count">/ {archive.pageCount}</span>
-          <input
-            type="range"
-            className="reader__pagebar-slider"
-            min={1}
-            max={archive.pageCount}
-            value={pageIndex + 1}
-            onChange={(e) => setPageIndex(Number(e.target.value) - 1)}
-            aria-label="Curseur de page"
-          />
+          <div className="reader__pagebar-slider-wrap">
+            <input
+              type="range"
+              className="reader__pagebar-slider"
+              min={1}
+              max={archive.pageCount}
+              value={pageIndex + 1}
+              onChange={(e) => navigateTo(Number(e.target.value) - 1)}
+              aria-label="Curseur de page"
+            />
+            <div className="reader__pagebar-ticks">
+              {bookmarks.map((b) => (
+                <span
+                  key={b.pageIndex}
+                  className="reader__pagebar-tick"
+                  style={{
+                    left: `${archive.pageCount > 1 ? (b.pageIndex / (archive.pageCount - 1)) * 100 : 0}%`,
+                    background: BOOKMARK_COLOR_HEX[b.color],
+                  }}
+                  title={b.label}
+                  onClick={() => navigateTo(b.pageIndex)}
+                />
+              ))}
+            </div>
+          </div>
         </div>
+      )}
+
+      {showInfo && (
+        <ComicInfoModal
+          comicInfo={archive.comicInfo}
+          pageCount={archive.pageCount}
+          format={archive.format}
+          onClose={() => setShowInfo(false)}
+        />
       )}
     </div>
   );

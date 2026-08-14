@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { COMFORT_FILTERS, ComfortFilterId } from "../lib/comfortFilter";
 import { applyTheme, saveActiveTheme } from "../lib/theme";
 import { BUILT_IN_THEMES, ThemeFile } from "../lib/themeFile";
 import { getThemesFolderLocation, isThemesFolderSupported, loadThemesFromFolder } from "../lib/themesFileStore";
@@ -6,6 +7,8 @@ import { getThemesFolderLocation, isThemesFolderSupported, loadThemesFromFolder 
 interface Props {
   theme: ThemeFile;
   onChange: (theme: ThemeFile) => void;
+  comfortFilter: ComfortFilterId;
+  onComfortFilterChange: (id: ComfortFilterId) => void;
 }
 
 // The "Apparence" tab of SettingsModal: pick a theme from the themes/ folder,
@@ -16,7 +19,7 @@ interface Props {
 // where this folder is. Not available in the plain web build, which has no
 // legitimate way to write files to a fixed location without a user gesture
 // each time — it just shows the bundled built-ins with no folder at all.
-export default function AppearanceTab({ theme, onChange }: Props) {
+export default function AppearanceTab({ theme, onChange, comfortFilter, onComfortFilterChange }: Props) {
   const supported = isThemesFolderSupported();
   const [themes, setThemes] = useState<ThemeFile[]>(BUILT_IN_THEMES);
   const [folderPath, setFolderPath] = useState<string | null>(null);
@@ -59,6 +62,25 @@ export default function AppearanceTab({ theme, onChange }: Props) {
           <ThemeSwatch key={t.id} theme={t} active={isActive(t)} onClick={() => select(t)} />
         ))}
       </div>
+
+      <label className="shortcuts-detail__label">Filtre de confort visuel</label>
+      <div className="appearance-tab__options">
+        {COMFORT_FILTERS.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            className={`appearance-tab__option${comfortFilter === f.id ? " active" : ""}`}
+            onClick={() => onComfortFilterChange(f.id)}
+          >
+            <span
+              className="appearance-tab__swatch"
+              style={{ filter: f.filter ?? undefined, background: "linear-gradient(135deg, #e8dcc8 50%, #6b5744 50%)" }}
+            />
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <p className="appearance-tab__hint">S'applique à l'image de la page dans le lecteur, indépendamment du thème.</p>
 
       {supported ? (
         <>

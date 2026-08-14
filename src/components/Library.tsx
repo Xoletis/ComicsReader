@@ -21,6 +21,7 @@ import {
 } from "../lib/library";
 import { folderColorKey, loadFolderColors, saveFolderColor } from "../lib/folderColors";
 import { loadProgressByKey, ReaderProgress, renameProgressKey } from "../lib/progress";
+import { renameBookmarksKey } from "../lib/bookmarks";
 import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import FolderColorModal from "./FolderColorModal";
 import FolderIcon from "./FolderIcon";
@@ -40,6 +41,7 @@ interface Props {
   onOpenFile: (file: File) => void;
   refreshSignal: number;
   onOpenSettings: () => void;
+  onOpenBookmarksOverview: () => void;
   shortcutOverrides: ShortcutOverrides;
   active: boolean;
 }
@@ -60,7 +62,7 @@ function parseKey(key: string): MoveItem {
   return { name, isDirectory };
 }
 
-export default function Library({ onOpenFile, refreshSignal, onOpenSettings, shortcutOverrides, active }: Props) {
+export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onOpenBookmarksOverview, shortcutOverrides, active }: Props) {
   const [status, setStatus] = useState<Status>("checking");
   const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [path, setPath] = useState<PathEntry[]>([]);
@@ -681,7 +683,10 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, sho
         await renameEntry(currentHandle, renameTarget.name, trimmed, renameTarget.isDirectory);
         if (!renameTarget.isDirectory) {
           const size = sizeByNameRef.current.get(renameTarget.name);
-          if (size !== undefined) renameProgressKey(renameTarget.name, trimmed, size);
+          if (size !== undefined) {
+            renameProgressKey(renameTarget.name, trimmed, size);
+            renameBookmarksKey(renameTarget.name, trimmed, size);
+          }
         }
         setRenameTarget(null);
         await refreshEntries(currentHandle);
@@ -811,6 +816,17 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, sho
             </button>
           </div>
         )}
+        <button
+          type="button"
+          className="toolbar__icon-btn library__settings-btn"
+          onClick={onOpenBookmarksOverview}
+          aria-label="Tous les marque-pages"
+          title="Tous les marque-pages"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 3h12v18l-6-4-6 4V3z" />
+          </svg>
+        </button>
         <button
           type="button"
           className="toolbar__icon-btn library__settings-btn"

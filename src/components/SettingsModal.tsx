@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ComfortFilterId } from "../lib/comfortFilter";
 import { loadActiveTheme } from "../lib/theme";
 import { ThemeFile } from "../lib/themeFile";
 import { PerformancePreset } from "../lib/performance";
@@ -12,11 +13,20 @@ interface Props {
   onShortcutsChange: (overrides: ShortcutOverrides) => void;
   performancePreset: PerformancePreset;
   onPerformanceChange: (preset: PerformancePreset) => void;
+  comfortFilter: ComfortFilterId;
+  onComfortFilterChange: (id: ComfortFilterId) => void;
 }
 
 type Tab = "appearance" | "shortcuts" | "performance";
 
-export default function SettingsModal({ onClose, onShortcutsChange, performancePreset, onPerformanceChange }: Props) {
+export default function SettingsModal({
+  onClose,
+  onShortcutsChange,
+  performancePreset,
+  onPerformanceChange,
+  comfortFilter,
+  onComfortFilterChange,
+}: Props) {
   const [tab, setTab] = useState<Tab>("appearance");
   const [theme, setTheme] = useState<ThemeFile>(() => loadActiveTheme());
   // Suspended while ShortcutsTab is capturing a key combo, so pressing
@@ -47,7 +57,14 @@ export default function SettingsModal({ onClose, onShortcutsChange, performanceP
           </button>
         </div>
 
-        {tab === "appearance" && <AppearanceTab theme={theme} onChange={setTheme} />}
+        {tab === "appearance" && (
+          <AppearanceTab
+            theme={theme}
+            onChange={setTheme}
+            comfortFilter={comfortFilter}
+            onComfortFilterChange={onComfortFilterChange}
+          />
+        )}
         {tab === "shortcuts" && <ShortcutsTab onChange={onShortcutsChange} onCapturingChange={setCapturing} />}
         {tab === "performance" && <PerformanceTab preset={performancePreset} onChange={onPerformanceChange} />}
 

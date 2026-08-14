@@ -13,6 +13,8 @@ export interface Page {
 export interface OpenedArchive {
   format: ArchiveFormat;
   pageCount: number;
+  /** Parsed from a ComicInfo.xml entry at the archive root (if any), null otherwise. */
+  comicInfo: ComicInfo | null;
   /** Synchronous cache lookup — never triggers extraction. */
   peekPage(index: number): Page | undefined;
   /** Extracts (or returns from cache) a single page. */
@@ -20,6 +22,34 @@ export interface OpenedArchive {
   /** Frees cached pages outside [keepMin, keepMax] to bound memory usage. */
   evictOutside(keepMin: number, keepMax: number): void;
   dispose(): void;
+}
+
+// The subset of the ComicInfo.xml schema (ComicRack/ComicTagger convention)
+// worth surfacing to a reader — all fields are optional since real-world
+// files populate whichever ones their tagger supports.
+export interface ComicInfo {
+  title?: string;
+  series?: string;
+  number?: string;
+  volume?: string;
+  summary?: string;
+  writer?: string;
+  penciller?: string;
+  inker?: string;
+  colorist?: string;
+  letterer?: string;
+  coverArtist?: string;
+  editor?: string;
+  publisher?: string;
+  genre?: string;
+  year?: string;
+  month?: string;
+  day?: string;
+  languageISO?: string;
+  characters?: string;
+  web?: string;
+  ageRating?: string;
+  manga?: string;
 }
 
 // A real File already satisfies this (and is what drag-and-drop and the
@@ -34,12 +64,60 @@ export interface ArchiveSourceSlice {
 export interface ArchiveSource {
   readonly name: string;
   readonly size: number;
+  // Present only for sources backed by a real filesystem path (desktop file
+  // association opens) — lib/recentFiles.ts uses it to reopen a "Fichiers
+  // récents" entry directly, without needing the user to browse to it again.
+  readonly path?: string;
   slice(start?: number, end?: number): ArchiveSourceSlice;
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|avif)$/i;
 const IGNORED_PATH_RE = /(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db)/i;
+const COMICINFO_RE = /(^|\/)comicinfo\.xml$/i;
+
+// Reads whichever of these tags are present, in document order, ignoring
+// case on the tag name (real-world files are inconsistent about it) — a
+// missing tag just leaves the corresponding ComicInfo field undefined.
+function textOf(doc: Document, tag: string): string | undefined {
+  const el = doc.getElementsByTagName(tag)[0];
+  const text = el?.textContent?.trim();
+  return text ? text : undefined;
+}
+
+function parseComicInfoXml(xml: string): ComicInfo | null {
+  try {
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length > 0) return null;
+    const info: ComicInfo = {
+      title: textOf(doc, "Title"),
+      series: textOf(doc, "Series"),
+      number: textOf(doc, "Number"),
+      volume: textOf(doc, "Volume"),
+      summary: textOf(doc, "Summary"),
+      writer: textOf(doc, "Writer"),
+      penciller: textOf(doc, "Penciller"),
+      inker: textOf(doc, "Inker"),
+      colorist: textOf(doc, "Colorist"),
+      letterer: textOf(doc, "Letterer"),
+      coverArtist: textOf(doc, "CoverArtist"),
+      editor: textOf(doc, "Editor"),
+      publisher: textOf(doc, "Publisher"),
+      genre: textOf(doc, "Genre"),
+      year: textOf(doc, "Year"),
+      month: textOf(doc, "Month"),
+      day: textOf(doc, "Day"),
+      languageISO: textOf(doc, "LanguageISO"),
+      characters: textOf(doc, "Characters"),
+      web: textOf(doc, "Web"),
+      ageRating: textOf(doc, "AgeRating"),
+      manga: textOf(doc, "Manga"),
+    };
+    return Object.values(info).some((v) => v !== undefined) ? info : null;
+  } catch {
+    return null;
+  }
+}
 
 export class UnsupportedFormatError extends Error {}
 
@@ -84,6 +162,17 @@ export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
     throw new UnsupportedFormatError("Aucune image trouvée dans cette archive.");
   }
 
+  const comicInfoName = format === "cbz" ? findCbzComicInfoName(buffer) : await findCbrComicInfoName(buffer);
+  let comicInfo: ComicInfo | null = null;
+  if (comicInfoName) {
+    try {
+      const extracted = format === "cbz" ? extractCbzSingle(buffer, comicInfoName) : await extractCbrSingle(buffer, comicInfoName);
+      if (extracted) comicInfo = parseComicInfoXml(new TextDecoder().decode(extracted.data));
+    } catch {
+      // ComicInfo.xml présent mais illisible - on continue sans métadonnées
+    }
+  }
+
   const cache = new Map<number, Page>();
   const pending = new Map<number, Promise<Page>>();
 
@@ -99,6 +188,7 @@ export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
   return {
     format,
     pageCount: names.length,
+    comicInfo,
 
     peekPage(index) {
       return cache.get(index);
@@ -168,6 +258,22 @@ function collectCbzImageNames(buffer: ArrayBuffer): string[] {
     },
   });
   return names.sort(compareNatural);
+}
+
+// A second, separate listing pass (rather than folded into
+// collectCbzImageNames above) so that function's signature and its other
+// caller (the cover-fast fallback, which has no use for ComicInfo.xml) stay
+// untouched. unzipSync's filter never decompresses skipped entries, so this
+// costs no more than reading the directory itself.
+function findCbzComicInfoName(buffer: ArrayBuffer): string | null {
+  let found: string | null = null;
+  unzipSync(new Uint8Array(buffer), {
+    filter(entry) {
+      if (!found && !entry.name.endsWith("/") && COMICINFO_RE.test(entry.name)) found = entry.name;
+      return false;
+    },
+  });
+  return found;
 }
 
 function extractCbzSingle(buffer: ArrayBuffer, name: string): ExtractedImage | null {
@@ -305,6 +411,15 @@ async function collectCbrImageNames(buffer: ArrayBuffer): Promise<string[]> {
     if (!header.flags.directory && isImageEntry(header.name)) names.push(header.name);
   }
   return names.sort(compareNatural);
+}
+
+async function findCbrComicInfoName(buffer: ArrayBuffer): Promise<string | null> {
+  const extractor = await openCbrExtractor(buffer);
+  const { fileHeaders } = extractor.getFileList();
+  for (const header of fileHeaders) {
+    if (!header.flags.directory && COMICINFO_RE.test(header.name)) return header.name;
+  }
+  return null;
 }
 
 async function extractCbrSingle(buffer: ArrayBuffer, name: string): Promise<ExtractedImage | null> {
