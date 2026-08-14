@@ -10,6 +10,8 @@ interface Props {
   onClearRecent: () => void;
 }
 
+const RECENT_FILES_VISIBLE_KEY = "cbreader:recentFilesVisible";
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} o`;
   const units = ["Ko", "Mo", "Go", "To"];
@@ -24,6 +26,9 @@ function formatBytes(bytes: number): string {
 
 export default function FileDropZone({ onFile, error, recentFiles, onOpenRecent, onRemoveRecent, onClearRecent }: Props) {
   const [dragging, setDragging] = useState(false);
+  // Hidden by default — the recent-files list otherwise takes up permanent
+  // space on the home screen for something most sessions never touch.
+  const [recentVisible, setRecentVisible] = useState(() => localStorage.getItem(RECENT_FILES_VISIBLE_KEY) === "1");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = useCallback(
@@ -33,6 +38,18 @@ export default function FileDropZone({ onFile, error, recentFiles, onOpenRecent,
     },
     [onFile]
   );
+
+  const toggleRecentVisible = useCallback(() => {
+    setRecentVisible((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(RECENT_FILES_VISIBLE_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <div
@@ -56,6 +73,21 @@ export default function FileDropZone({ onFile, error, recentFiles, onOpenRecent,
         <button type="button" onClick={() => inputRef.current?.click()}>
           Choisir un fichier
         </button>
+        {recentFiles.length > 0 && (
+          <button
+            type="button"
+            className={`recent-files__toggle${recentVisible ? " active" : ""}`}
+            onClick={toggleRecentVisible}
+            aria-expanded={recentVisible}
+            aria-label="Fichiers récents"
+            title="Fichiers récents"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <polyline points="12 7 12 12 16 14" />
+            </svg>
+          </button>
+        )}
         <input
           ref={inputRef}
           type="file"
@@ -65,7 +97,7 @@ export default function FileDropZone({ onFile, error, recentFiles, onOpenRecent,
         />
         {error && <p className="drop-zone__error">{error}</p>}
 
-        {recentFiles.length > 0 && (
+        {recentVisible && recentFiles.length > 0 && (
           <div className="recent-files">
             <div className="recent-files__header">
               <span>Fichiers récents</span>

@@ -65,20 +65,26 @@ export default function AppearanceTab({ theme, onChange, comfortFilter, onComfor
 
       <label className="shortcuts-detail__label">Filtre de confort visuel</label>
       <div className="appearance-tab__options">
-        {COMFORT_FILTERS.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            className={`appearance-tab__option${comfortFilter === f.id ? " active" : ""}`}
-            onClick={() => onComfortFilterChange(f.id)}
-          >
-            <span
-              className="appearance-tab__swatch"
-              style={{ filter: f.filter ?? undefined, background: "linear-gradient(135deg, #e8dcc8 50%, #6b5744 50%)" }}
-            />
-            {f.label}
-          </button>
-        ))}
+        {COMFORT_FILTERS.map((f) => {
+          const active = comfortFilter === f.id;
+          return (
+            <button
+              key={f.id}
+              type="button"
+              className={`appearance-tab__option${active ? " active" : ""}`}
+              onClick={() => onComfortFilterChange(f.id)}
+            >
+              <span className="appearance-tab__swatch-wrap">
+                <span
+                  className="appearance-tab__swatch"
+                  style={{ filter: f.filter ?? undefined, background: "linear-gradient(135deg, #e8dcc8 50%, #6b5744 50%)" }}
+                />
+                {active && <CheckBadge />}
+              </span>
+              <span className="appearance-tab__option-label">{f.label}</span>
+            </button>
+          );
+        })}
       </div>
       <p className="appearance-tab__hint">S'applique à l'image de la page dans le lecteur, indépendamment du thème.</p>
 
@@ -116,11 +122,27 @@ export default function AppearanceTab({ theme, onChange, comfortFilter, onComfor
 function ThemeSwatch({ theme, active, onClick }: { theme: ThemeFile; active: boolean; onClick: () => void }) {
   return (
     <button type="button" className={`appearance-tab__option${active ? " active" : ""}`} onClick={onClick}>
-      <span
-        className="appearance-tab__swatch"
-        style={{ background: `linear-gradient(135deg, ${theme.colors.bg} 50%, ${theme.colors.accent} 50%)` }}
-      />
-      {theme.name}
+      <span className="appearance-tab__swatch-wrap">
+        <span
+          className="appearance-tab__swatch"
+          style={{ background: `linear-gradient(135deg, ${theme.colors.bg} 50%, ${theme.colors.accent} 50%)` }}
+        />
+        {active && <CheckBadge />}
+      </span>
+      <span className="appearance-tab__option-label">{theme.name}</span>
     </button>
+  );
+}
+
+// Small overlay badge marking the currently active theme/filter swatch —
+// a border-color change alone (the previous "active" indicator) was too
+// subtle to read as "this one is selected" at a glance.
+function CheckBadge() {
+  return (
+    <span className="appearance-tab__check" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="20 6 9 17 4 12" />
+      </svg>
+    </span>
   );
 }

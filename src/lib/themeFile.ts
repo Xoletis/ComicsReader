@@ -114,6 +114,31 @@ export function isValidThemeFile(value: unknown): value is ThemeFile {
   return COLOR_KEYS.every((key) => typeof colors[key] === "string" && colors[key] !== "");
 }
 
+function hexToRgb(hex: string): [number, number, number] | null {
+  const value = hex.trim().replace(/^#/, "");
+  if (/^[0-9a-f]{3}$/i.test(value)) {
+    const [r, g, b] = value.split("").map((c) => parseInt(c + c, 16));
+    return [r, g, b];
+  }
+  if (/^[0-9a-f]{6}$/i.test(value)) {
+    const n = parseInt(value, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  return null;
+}
+
+// Classifies a theme's background as light or dark from perceived luminance
+// (ITU-R BT.601 weights) — good enough to pick a color-scheme, no need for a
+// full WCAG contrast computation. Unrecognized formats (a custom theme file
+// using rgb()/named colors instead of hex) fall back to dark, matching the
+// app's own default theme.
+function isDarkColor(hex: string): boolean {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return true;
+  const [r, g, b] = rgb;
+  return (r * 299 + g * 587 + b * 114) / 1000 < 128;
+}
+
 // Applied as inline custom properties on <html> rather than swapping a CSS
 // class/stylesheet — this is what lets an arbitrary, never-seen-at-build-time
 // JSON file re-theme the app, not just a fixed set of classes baked into
@@ -127,6 +152,13 @@ export function applyThemeFile(theme: ThemeFile): void {
     root.setProperty(CSS_VAR_NAMES[key], theme.colors[key]);
   }
   root.setProperty("--font-family", theme.font ?? DEFAULT_FONT);
+  // Native form controls (a <select>'s dropdown popup, scrollbars) render
+  // with the OS's default light chrome unless told otherwise — with a dark
+  // theme's light text color applied to the closed <select>, that popup's
+  // options were unreadable white-on-white. This tells the browser which
+  // chrome to use, computed from the theme's own background rather than
+  // hardcoded, so it stays correct for custom theme files too.
+  root.setProperty("color-scheme", isDarkColor(theme.colors.bg) ? "dark" : "light");
 }
 
 // Built-in themes are just JSON files under src/themes/, told apart from

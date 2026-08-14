@@ -89,9 +89,10 @@ export default function Library({
   const [coverErrors, setCoverErrors] = useState<Set<string>>(new Set());
   const [progressByName, setProgressByName] = useState<Map<string, ReaderProgress>>(new Map());
   // Read-status overrides live directly in localStorage (lib/readStatus.ts),
-  // not in React state — this just forces a re-render after toggling one, so
-  // the badge (computed fresh from localStorage on every render) picks it up.
-  const [, bumpReadStatusVersion] = useReducer((n: number) => n + 1, 0);
+  // not in React state — this just forces a re-render (and, via the memo dep
+  // below, a re-sort/re-filter) after toggling one, so the badge and the
+  // "Non lus"/"Lus"/trier par statut views pick it up.
+  const [readStatusVersion, bumpReadStatusVersion] = useReducer((n: number) => n + 1, 0);
   const [viewPrefs, setViewPrefs] = useState(() => loadLibraryViewPrefs());
   const coversRef = useRef(covers);
   const sizeByNameRef = useRef<Map<string, number>>(new Map());
@@ -590,10 +591,15 @@ export default function Library({
 
   // Sorting/filtering happen here rather than in listEntries — size,
   // lastModified and read status only become known progressively as covers
-  // load in (see the cover effect above), so this recomputes on every render
-  // instead of being memoized against those refs directly. Comic counts in a
-  // single folder are modest enough that this is cheap either way.
-  const visibleComics = (() => {
+  // load in (see the cover effect above). Memoized against covers/coverErrors
+  // (not just comics/viewPrefs) because those are exactly the states that
+  // change on every single entry as the loading worker populates the
+  // size/lastModified refs this reads — so the memo still refreshes as data
+  // streams in, but no longer re-sorts (with a natural-sort string compare,
+  // and a localStorage read per comic for status/filter) on every unrelated
+  // re-render — a hover, a context-menu toggle, a rename dialog keystroke —
+  // which is what made a large library feel sluggish to interact with.
+  const visibleComics = useMemo(() => {
     const filtered = viewPrefs.filter === "all" ? comics : comics.filter((entry) => readStatusOf(entry.name) === viewPrefs.filter);
     const dirMul = viewPrefs.sortDir === "asc" ? 1 : -1;
     const statusRank = (status: ReturnType<typeof readStatusOf>) => (status === "unread" ? 0 : status === "in-progress" ? 1 : 2);
@@ -609,7 +615,8 @@ export default function Library({
           return compareNatural(a.name, b.name) * dirMul;
       }
     });
-  })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- covers/coverErrors stand in for the progressively-populated size/lastModified refs
+  }, [comics, viewPrefs, readStatusOf, covers, coverErrors, readStatusVersion]);
 
   const handleColorSelect = useCallback(
     (color: string | null) => {
@@ -910,61 +917,80 @@ export default function Library({
       onMouseDown={handleGridMouseDown}
     >
       <div className="library__main">
+      {status === "connected" && path.length > 0 && (
+        <div className="library__breadcrumb-row">
+          <span className="library__breadcrumb">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+            </svg>
+            {path.map((entry, i) => (
+              <span key={i}>
+                {i > 0 && <span className="library__breadcrumb-sep">/</span>}
+                <button
+                  type="button"
+                  className="library__breadcrumb-crumb"
+                  disabled={i === path.length - 1}
+                  onClick={() => navigateTo(path.slice(0, i + 1))}
+                >
+                  {entry.name}
+                </button>
+              </span>
+            ))}
+            <span className="library__breadcrumb-count">({comics.length})</span>
+          </span>
+        </div>
+      )}
       <div className="library__header">
         <h2>Bibliothèque</h2>
         {status === "connected" && path.length > 0 && (
           <div className="library__folder-controls">
-            <span className="library__breadcrumb">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-              </svg>
-              {path.map((entry, i) => (
-                <span key={i}>
-                  {i > 0 && <span className="library__breadcrumb-sep">/</span>}
-                  <button
-                    type="button"
-                    className="library__breadcrumb-crumb"
-                    disabled={i === path.length - 1}
-                    onClick={() => navigateTo(path.slice(0, i + 1))}
-                  >
-                    {entry.name}
-                  </button>
-                </span>
-              ))}
-              <span className="library__breadcrumb-count">({comics.length})</span>
-            </span>
-
             <span className="library__toolbar-group">
-              <button type="button" className="library__action-btn" onClick={() => setCreatingFolder(true)}>
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={() => setCreatingFolder(true)}
+                aria-label="Nouveau dossier"
+                title="Nouveau dossier"
+              >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
                   <line x1="12" y1="11" x2="12" y2="15" />
                   <line x1="10" y1="13" x2="14" y2="13" />
                 </svg>
-                Nouveau dossier
               </button>
-              <button type="button" className="library__action-btn" onClick={handleRefresh} title="Actualiser">
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={handleRefresh}
+                aria-label="Actualiser"
+                title="Actualiser"
+              >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="23 4 23 10 17 10" />
                   <polyline points="1 20 1 14 7 14" />
                   <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
                 </svg>
-                Actualiser
               </button>
-              <button type="button" className="library__action-btn" onClick={handlePickFolder}>
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={handlePickFolder}
+                aria-label="Changer de dossier"
+                title="Changer de dossier"
+              >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H3z" />
                   <path d="M3 8l1.5 10.5A2 2 0 0 0 6.5 20h11a2 2 0 0 0 2-1.5L21 8" />
                 </svg>
-                Changer de dossier
               </button>
             </span>
 
             <span className="library__toolbar-group">
               <button
                 type="button"
-                className={`library__action-btn${treeVisible ? " active" : ""}`}
+                className={`library__action-btn library__action-btn--icon-only${treeVisible ? " active" : ""}`}
                 onClick={toggleTree}
+                aria-label="Arborescence"
                 title="Arborescence"
               >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -974,26 +1000,30 @@ export default function Library({
                   <line x1="13" y1="12" x2="21" y2="12" />
                   <line x1="13" y1="18" x2="21" y2="18" />
                 </svg>
-                Arborescence
               </button>
-              <button type="button" className="library__action-btn" onClick={() => setSearchOpen(true)} title="Rechercher">
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={() => setSearchOpen(true)}
+                aria-label="Rechercher"
+                title="Rechercher"
+              >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="7" />
                   <line x1="21" y1="21" x2="16.65" y2="16.65" />
                 </svg>
-                Rechercher
               </button>
               <button
                 type="button"
-                className={`library__action-btn${autoWatch ? " active" : ""}`}
+                className={`library__action-btn library__action-btn--icon-only${autoWatch ? " active" : ""}`}
                 onClick={toggleAutoWatch}
-                title="Détecte automatiquement les nouveaux fichiers, sans avoir à cliquer sur Actualiser"
+                aria-label="Surveillance auto"
+                title="Surveillance auto — détecte automatiquement les nouveaux fichiers, sans avoir à cliquer sur Actualiser"
               >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
                   <circle cx="12" cy="12" r="3" />
                 </svg>
-                Surveillance auto
               </button>
             </span>
 
@@ -1034,42 +1064,44 @@ export default function Library({
             </span>
           </div>
         )}
-        <button
-          type="button"
-          className="toolbar__icon-btn library__settings-btn"
-          onClick={onOpenBookmarksOverview}
-          aria-label="Tous les marque-pages"
-          title="Tous les marque-pages"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M6 3h12v18l-6-4-6 4V3z" />
-          </svg>
-        </button>
-        <button
-          type="button"
-          className="toolbar__icon-btn library__settings-btn"
-          onClick={onOpenStats}
-          aria-label="Statistiques de lecture"
-          title="Statistiques de lecture"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="5" y1="20" x2="5" y2="12" />
-            <line x1="12" y1="20" x2="12" y2="6" />
-            <line x1="19" y1="20" x2="19" y2="14" />
-          </svg>
-        </button>
-        <button
-          type="button"
-          className="toolbar__icon-btn library__settings-btn"
-          onClick={onOpenSettings}
-          aria-label="Configuration"
-          title="Configuration"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
+        <span className="library__header-actions">
+          <button
+            type="button"
+            className="toolbar__icon-btn"
+            onClick={onOpenBookmarksOverview}
+            aria-label="Tous les marque-pages"
+            title="Tous les marque-pages"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 3h12v18l-6-4-6 4V3z" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="toolbar__icon-btn"
+            onClick={onOpenStats}
+            aria-label="Statistiques de lecture"
+            title="Statistiques de lecture"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="5" y1="20" x2="5" y2="12" />
+              <line x1="12" y1="20" x2="12" y2="6" />
+              <line x1="19" y1="20" x2="19" y2="14" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="toolbar__icon-btn"
+            onClick={onOpenSettings}
+            aria-label="Configuration"
+            title="Configuration"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+        </span>
       </div>
 
       {selected.size > 0 && (
