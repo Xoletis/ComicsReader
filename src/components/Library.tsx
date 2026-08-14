@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { getCoverPage } from "../lib/archive";
+import { cacheCoverInBackground, loadCachedCoverUrl } from "../lib/coverCache";
 import {
   ComicEntry,
   createFolder,
@@ -23,6 +24,8 @@ import { folderColorKey, loadFolderColors, saveFolderColor } from "../lib/folder
 import { loadProgressByKey, ReaderProgress, renameProgressKey } from "../lib/progress";
 import { renameBookmarksKey } from "../lib/bookmarks";
 import { deriveReadStatus, loadReadOverride, renameReadStatusKey, saveReadOverride } from "../lib/readStatus";
+import { loadLibraryViewPrefs, saveLibraryViewPrefs, SortBy, StatusFilter } from "../lib/libraryView";
+import { compareNatural } from "../lib/naturalSort";
 import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import FolderColorModal from "./FolderColorModal";
 import FolderIcon from "./FolderIcon";
@@ -37,6 +40,8 @@ type Status = "checking" | "unsupported" | "disconnected" | "needs-permission" |
 const COVER_CONCURRENCY = 4;
 const INTERNAL_DND_TYPE = "application/x-cbreader-entries";
 const TREE_VISIBLE_KEY = "cbreader:libraryTreeVisible";
+const AUTO_WATCH_KEY = "cbreader:libraryAutoWatch";
+const AUTO_WATCH_INTERVAL_MS = 5000;
 
 interface Props {
   onOpenFile: (file: File) => void;
@@ -87,8 +92,14 @@ export default function Library({
   // not in React state — this just forces a re-render after toggling one, so
   // the badge (computed fresh from localStorage on every render) picks it up.
   const [, bumpReadStatusVersion] = useReducer((n: number) => n + 1, 0);
+  const [viewPrefs, setViewPrefs] = useState(() => loadLibraryViewPrefs());
   const coversRef = useRef(covers);
   const sizeByNameRef = useRef<Map<string, number>>(new Map());
+  // Populated alongside sizeByNameRef in the same cover-loading effect below —
+  // used for "date d'ajout" sorting (the File System Access API exposes no
+  // creation time, so last-modified is the closest available proxy) and as
+  // the cover cache's invalidation signal.
+  const lastModifiedByNameRef = useRef<Map<string, number>>(new Map());
 
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<MenuTarget | null>(null);
@@ -104,6 +115,9 @@ export default function Library({
   const [contextMenuPos, setContextMenuPos] = useState<{ left: number; top: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const [treeVisible, setTreeVisible] = useState(() => localStorage.getItem(TREE_VISIBLE_KEY) === "1");
+  // Defaults to on — the point of the feature is not having to remember to
+  // click Actualiser, so it should work without the user ever touching this.
+  const [autoWatch, setAutoWatch] = useState(() => localStorage.getItem(AUTO_WATCH_KEY) !== "0");
   const [searchOpen, setSearchOpen] = useState(false);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -189,6 +203,7 @@ export default function Library({
     setCoverErrors(new Set());
     setProgressByName(new Map());
     sizeByNameRef.current = new Map();
+    lastModifiedByNameRef.current = new Map();
     if (comics.length === 0) return;
 
     const cancelled = { current: false };
@@ -201,8 +216,22 @@ export default function Library({
         try {
           const file = await entry.handle.getFile();
           sizeByNameRef.current.set(entry.name, file.size);
+          lastModifiedByNameRef.current.set(entry.name, file.lastModified);
           const progress = loadProgressByKey(entry.name, file.size);
           if (progress) setProgressByName((prev) => new Map(prev).set(entry.name, progress));
+
+          // A cache hit skips extracting-from-archive entirely — by far the
+          // slowest part of showing a library grid, since it means unzipping
+          // (or un-RARing) into the comic just to read its first image.
+          const cachedUrl = await loadCachedCoverUrl(entry.name, file.size, file.lastModified);
+          if (cachedUrl) {
+            if (cancelled.current) {
+              URL.revokeObjectURL(cachedUrl);
+              return;
+            }
+            setCovers((prev) => new Map(prev).set(entry.name, cachedUrl));
+            continue;
+          }
 
           const cover = await getCoverPage(file);
           if (cancelled.current) {
@@ -211,6 +240,7 @@ export default function Library({
           }
           if (cover) {
             setCovers((prev) => new Map(prev).set(entry.name, cover.url));
+            cacheCoverInBackground(entry.name, file.size, file.lastModified, cover.url);
           } else {
             setCoverErrors((prev) => new Set(prev).add(entry.name));
           }
@@ -421,6 +451,43 @@ export default function Library({
     });
   }, []);
 
+  const toggleAutoWatch = useCallback(() => {
+    setAutoWatch((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(AUTO_WATCH_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      return next;
+    });
+  }, []);
+
+  // Polls the current folder for new/removed entries instead of requiring a
+  // manual Actualiser click. Cheap: listEntries() only reads directory
+  // entries, never file contents, so this doesn't touch archive data at all
+  // — and the functional setState form below only actually re-renders (and
+  // re-triggers the cover-loading effect) when the set of names genuinely
+  // changed, not on every tick.
+  useEffect(() => {
+    if (!autoWatch || status !== "connected" || !currentHandle) return;
+    const differs = (a: { name: string }[], b: { name: string }[]) => {
+      if (a.length !== b.length) return true;
+      const names = new Set(a.map((e) => e.name));
+      return !b.every((e) => names.has(e.name));
+    };
+    const interval = window.setInterval(async () => {
+      try {
+        const fresh = await listEntries(currentHandle);
+        setFolders((prev) => (differs(prev, fresh.folders) ? fresh.folders : prev));
+        setComics((prev) => (differs(prev, fresh.comics) ? fresh.comics : prev));
+      } catch {
+        // le dossier a pu devenir temporairement inaccessible - on réessaiera au prochain tick
+      }
+    }, AUTO_WATCH_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [autoWatch, status, currentHandle]);
+
   const openComic = useCallback(
     async (entry: ComicEntry) => {
       try {
@@ -504,6 +571,45 @@ export default function Library({
     },
     [progressByName]
   );
+
+  const updateViewPrefs = useCallback((patch: Partial<typeof viewPrefs>) => {
+    setViewPrefs((prev) => {
+      const next = { ...prev, ...patch };
+      saveLibraryViewPrefs(next);
+      return next;
+    });
+  }, []);
+
+  const readStatusOf = useCallback(
+    (name: string) => {
+      const size = sizeByNameRef.current.get(name);
+      return size !== undefined ? deriveReadStatus(loadReadOverride(name, size), progressByName.get(name) ?? null) : "unread";
+    },
+    [progressByName]
+  );
+
+  // Sorting/filtering happen here rather than in listEntries — size,
+  // lastModified and read status only become known progressively as covers
+  // load in (see the cover effect above), so this recomputes on every render
+  // instead of being memoized against those refs directly. Comic counts in a
+  // single folder are modest enough that this is cheap either way.
+  const visibleComics = (() => {
+    const filtered = viewPrefs.filter === "all" ? comics : comics.filter((entry) => readStatusOf(entry.name) === viewPrefs.filter);
+    const dirMul = viewPrefs.sortDir === "asc" ? 1 : -1;
+    const statusRank = (status: ReturnType<typeof readStatusOf>) => (status === "unread" ? 0 : status === "in-progress" ? 1 : 2);
+    return [...filtered].sort((a, b) => {
+      switch (viewPrefs.sortBy) {
+        case "date":
+          return ((lastModifiedByNameRef.current.get(a.name) ?? 0) - (lastModifiedByNameRef.current.get(b.name) ?? 0)) * dirMul;
+        case "size":
+          return ((sizeByNameRef.current.get(a.name) ?? 0) - (sizeByNameRef.current.get(b.name) ?? 0)) * dirMul;
+        case "readStatus":
+          return (statusRank(readStatusOf(a.name)) - statusRank(readStatusOf(b.name))) * dirMul;
+        default:
+          return compareNatural(a.name, b.name) * dirMul;
+      }
+    });
+  })();
 
   const handleColorSelect = useCallback(
     (color: string | null) => {
@@ -840,6 +946,40 @@ export default function Library({
             <button type="button" onClick={() => setSearchOpen(true)}>
               Rechercher
             </button>
+            <button
+              type="button"
+              className={autoWatch ? "active" : ""}
+              onClick={toggleAutoWatch}
+              title="Détecte automatiquement les nouveaux fichiers, sans avoir à cliquer sur Actualiser"
+            >
+              Surveillance auto
+            </button>
+            <label className="library__sort-control">
+              Trier :
+              <select value={viewPrefs.sortBy} onChange={(e) => updateViewPrefs({ sortBy: e.target.value as SortBy })}>
+                <option value="name">Nom</option>
+                <option value="date">Date d'ajout</option>
+                <option value="size">Taille</option>
+                <option value="readStatus">Statut de lecture</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={() => updateViewPrefs({ sortDir: viewPrefs.sortDir === "asc" ? "desc" : "asc" })}
+              aria-label={viewPrefs.sortDir === "asc" ? "Ordre croissant" : "Ordre décroissant"}
+              title={viewPrefs.sortDir === "asc" ? "Ordre croissant" : "Ordre décroissant"}
+            >
+              {viewPrefs.sortDir === "asc" ? "↑" : "↓"}
+            </button>
+            <label className="library__sort-control">
+              Filtrer :
+              <select value={viewPrefs.filter} onChange={(e) => updateViewPrefs({ filter: e.target.value as StatusFilter })}>
+                <option value="all">Tous</option>
+                <option value="unread">Non lus</option>
+                <option value="in-progress">En cours</option>
+                <option value="read">Lus</option>
+              </select>
+            </label>
           </div>
         )}
         <button
@@ -1017,9 +1157,14 @@ export default function Library({
 
             {comics.length > 0 && (
               <div className="library__section">
-                <h3 className="library__section-title">Comics</h3>
+                <h3 className="library__section-title">
+                  Comics {viewPrefs.filter !== "all" ? `(${visibleComics.length}/${comics.length})` : `(${comics.length})`}
+                </h3>
+                {visibleComics.length === 0 ? (
+                  <p className="appearance-tab__hint">Aucun comic ne correspond au filtre sélectionné.</p>
+                ) : (
                 <div className="library__grid library__grid--comics">
-                  {comics.map((entry) => {
+                  {visibleComics.map((entry) => {
                     const key = `comic:${entry.name}`;
                     const isSelected = selected.has(key);
                     const progress = progressByName.get(entry.name);
@@ -1121,6 +1266,7 @@ export default function Library({
                     );
                   })}
                 </div>
+                )}
               </div>
             )}
           </div>
