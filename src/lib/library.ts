@@ -31,7 +31,7 @@ export interface SearchResult {
 
 export type PermissionState = "granted" | "prompt" | "denied";
 
-const COMIC_EXT_RE = /\.(cbz|cbr|zip|rar)$/i;
+const COMIC_EXT_RE = /\.(cbz|cbr|zip|rar|pdf)$/i;
 const INVALID_NAME_RE = /[<>:"/\\|?*\x00-\x1F]/;
 
 const HANDLE_KEY = "directoryHandle";
@@ -80,7 +80,7 @@ export async function pickFilesToImport(): Promise<File[]> {
     types: [
       {
         description: "Comics",
-        accept: { "application/octet-stream": [".cbz", ".cbr", ".zip", ".rar"] },
+        accept: { "application/octet-stream": [".cbz", ".cbr", ".zip", ".rar", ".pdf"] },
       },
     ],
   });

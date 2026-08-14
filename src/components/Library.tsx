@@ -671,7 +671,7 @@ export default function Library({
 
       const files = Array.from(e.dataTransfer.files).filter((file) => isComicFile(file.name));
       if (files.length === 0) {
-        setPickError("Seuls les fichiers .cbz/.cbr peuvent être déposés dans un dossier.");
+        setPickError("Seuls les fichiers .cbz/.cbr/.pdf peuvent être déposés dans un dossier.");
         return;
       }
       setActionBusy(true);
@@ -705,7 +705,7 @@ export default function Library({
     }
     const comicFiles = files.filter((file) => isComicFile(file.name));
     if (comicFiles.length === 0) {
-      setPickError("Seuls les fichiers .cbz/.cbr peuvent être importés.");
+      setPickError("Seuls les fichiers .cbz/.cbr/.pdf peuvent être importés.");
       return;
     }
     setActionBusy(true);

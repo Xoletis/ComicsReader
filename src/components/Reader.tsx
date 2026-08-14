@@ -934,7 +934,7 @@ export default function Reader({
       <input
         ref={openFileInputRef}
         type="file"
-        accept=".cbz,.zip,.cbr,.rar"
+        accept=".cbz,.zip,.cbr,.rar,.pdf"
         hidden
         onChange={(e) => {
           const file = e.target.files?.[0];

@@ -605,8 +605,13 @@ button.active {
   gap: 16px;
 }
 
+/* Fixed-width, left-packed tracks (not 1fr) so folder tiles stay compact and
+   icon-sized like a file explorer's icon view, instead of stretching to fill
+   whatever's left in the row — which looked emptier and worse the wider the
+   library panel got. */
 .library__grid--folders {
-  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  grid-template-columns: repeat(auto-fill, 96px);
+  justify-content: start;
 }
 
 .comic-card {

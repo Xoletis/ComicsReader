@@ -52,14 +52,14 @@ export default function FileDropZone({ onFile, error, recentFiles, onOpenRecent,
         <h1>
           CBReader <span className="drop-zone__version">v{import.meta.env.VITE_APP_VERSION}</span>
         </h1>
-        <p>Glissez-déposez un fichier .cbz ou .cbr ici</p>
+        <p>Glissez-déposez un fichier .cbz, .cbr ou .pdf ici</p>
         <button type="button" onClick={() => inputRef.current?.click()}>
           Choisir un fichier
         </button>
         <input
           ref={inputRef}
           type="file"
-          accept=".cbz,.zip,.cbr,.rar"
+          accept=".cbz,.zip,.cbr,.rar,.pdf"
           hidden
           onChange={(e) => handleFiles(e.target.files)}
         />
