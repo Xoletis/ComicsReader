@@ -1,0 +1,32 @@
+{
+  "id": "dark",
+  "name": "Sombre",
+  "colors": {
+    "bg": "#121212",
+    "bgAlt": "#1a1a1a",
+    "bgModal": "#1e1e1e",
+    "bgPanel": "#16181d",
+    "bgInset": "#0f1115",
+    "bgBlack": "#000000",
+    "surface": "#2a2a2a",
+    "surfaceHover": "#22262e",
+    "surfaceHover2": "#2f343d",
+    "accentBg": "#1a2333",
+    "accentBorder": "#2a3a52",
+    "border": "#3a3a3a",
+    "accent": "#4a7fd6",
+    "accentHover": "#3a6fc6",
+    "accentText": "#7fb0ff",
+    "accentTextSoft": "#cddaf2",
+    "text": "#eeeeee",
+    "textStrong": "#ffffff",
+    "textSecondary": "#cccccc",
+    "textMuted": "#aaaaaa",
+    "textDim": "#888888",
+    "textDimmer": "#777777",
+    "textFaint": "#666666",
+    "danger": "#ff6b6b",
+    "dangerStrong": "#d64a4a",
+    "dangerBorder": "#a04a4a"
+  }
+}

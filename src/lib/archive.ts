@@ -1,9 +1,13 @@
 import { inflateSync, unzipSync } from "fflate";
 import { createExtractorFromData, type FileHeader } from "node-unrar-js";
 import unrarWasmUrl from "node-unrar-js/esm/js/unrar.wasm?url";
+import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { compareNatural } from "./naturalSort";
 
-export type ArchiveFormat = "cbz" | "cbr";
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+export type ArchiveFormat = "cbz" | "cbr" | "pdf";
 
 export interface Page {
   name: string;
@@ -13,6 +17,8 @@ export interface Page {
 export interface OpenedArchive {
   format: ArchiveFormat;
   pageCount: number;
+  /** Parsed from a ComicInfo.xml entry at the archive root (if any), null otherwise. */
+  comicInfo: ComicInfo | null;
   /** Synchronous cache lookup — never triggers extraction. */
   peekPage(index: number): Page | undefined;
   /** Extracts (or returns from cache) a single page. */
@@ -20,6 +26,34 @@ export interface OpenedArchive {
   /** Frees cached pages outside [keepMin, keepMax] to bound memory usage. */
   evictOutside(keepMin: number, keepMax: number): void;
   dispose(): void;
+}
+
+// The subset of the ComicInfo.xml schema (ComicRack/ComicTagger convention)
+// worth surfacing to a reader — all fields are optional since real-world
+// files populate whichever ones their tagger supports.
+export interface ComicInfo {
+  title?: string;
+  series?: string;
+  number?: string;
+  volume?: string;
+  summary?: string;
+  writer?: string;
+  penciller?: string;
+  inker?: string;
+  colorist?: string;
+  letterer?: string;
+  coverArtist?: string;
+  editor?: string;
+  publisher?: string;
+  genre?: string;
+  year?: string;
+  month?: string;
+  day?: string;
+  languageISO?: string;
+  characters?: string;
+  web?: string;
+  ageRating?: string;
+  manga?: string;
 }
 
 // A real File already satisfies this (and is what drag-and-drop and the
@@ -34,12 +68,60 @@ export interface ArchiveSourceSlice {
 export interface ArchiveSource {
   readonly name: string;
   readonly size: number;
+  // Present only for sources backed by a real filesystem path (desktop file
+  // association opens) — lib/recentFiles.ts uses it to reopen a "Fichiers
+  // récents" entry directly, without needing the user to browse to it again.
+  readonly path?: string;
   slice(start?: number, end?: number): ArchiveSourceSlice;
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|avif)$/i;
 const IGNORED_PATH_RE = /(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db)/i;
+const COMICINFO_RE = /(^|\/)comicinfo\.xml$/i;
+
+// Reads whichever of these tags are present, in document order, ignoring
+// case on the tag name (real-world files are inconsistent about it) — a
+// missing tag just leaves the corresponding ComicInfo field undefined.
+function textOf(doc: Document, tag: string): string | undefined {
+  const el = doc.getElementsByTagName(tag)[0];
+  const text = el?.textContent?.trim();
+  return text ? text : undefined;
+}
+
+function parseComicInfoXml(xml: string): ComicInfo | null {
+  try {
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length > 0) return null;
+    const info: ComicInfo = {
+      title: textOf(doc, "Title"),
+      series: textOf(doc, "Series"),
+      number: textOf(doc, "Number"),
+      volume: textOf(doc, "Volume"),
+      summary: textOf(doc, "Summary"),
+      writer: textOf(doc, "Writer"),
+      penciller: textOf(doc, "Penciller"),
+      inker: textOf(doc, "Inker"),
+      colorist: textOf(doc, "Colorist"),
+      letterer: textOf(doc, "Letterer"),
+      coverArtist: textOf(doc, "CoverArtist"),
+      editor: textOf(doc, "Editor"),
+      publisher: textOf(doc, "Publisher"),
+      genre: textOf(doc, "Genre"),
+      year: textOf(doc, "Year"),
+      month: textOf(doc, "Month"),
+      day: textOf(doc, "Day"),
+      languageISO: textOf(doc, "LanguageISO"),
+      characters: textOf(doc, "Characters"),
+      web: textOf(doc, "Web"),
+      ageRating: textOf(doc, "AgeRating"),
+      manga: textOf(doc, "Manga"),
+    };
+    return Object.values(info).some((v) => v !== undefined) ? info : null;
+  } catch {
+    return null;
+  }
+}
 
 export class UnsupportedFormatError extends Error {}
 
@@ -47,11 +129,13 @@ export function detectFormat(file: ArchiveSource): ArchiveFormat | null {
   const name = file.name.toLowerCase();
   if (name.endsWith(".cbz") || name.endsWith(".zip")) return "cbz";
   if (name.endsWith(".cbr") || name.endsWith(".rar")) return "cbr";
+  if (name.endsWith(".pdf")) return "pdf";
   return null;
 }
 
 const ZIP_MAGIC = [0x50, 0x4b];
 const RAR_MAGIC = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07];
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46]; // "%PDF"
 
 function bytesStartWith(bytes: Uint8Array, magic: number[]): boolean {
   return magic.every((byte, i) => bytes[i] === byte);
@@ -64,6 +148,7 @@ async function detectFormatFromContent(file: ArchiveSource): Promise<ArchiveForm
   const head = new Uint8Array(await file.slice(0, 8).arrayBuffer());
   if (bytesStartWith(head, ZIP_MAGIC)) return "cbz";
   if (bytesStartWith(head, RAR_MAGIC)) return "cbr";
+  if (bytesStartWith(head, PDF_MAGIC)) return "pdf";
   return null;
 }
 
@@ -73,8 +158,9 @@ async function resolveFormat(file: ArchiveSource): Promise<ArchiveFormat | null>
 
 export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
   const format = await resolveFormat(file);
+  if (format === "pdf") return openPdfArchive(file);
   if (format !== "cbz" && format !== "cbr") {
-    throw new UnsupportedFormatError("Format de fichier non reconnu. Utilisez un fichier .cbz, .cbr, .zip ou .rar.");
+    throw new UnsupportedFormatError("Format de fichier non reconnu. Utilisez un fichier .cbz, .cbr, .pdf, .zip ou .rar.");
   }
 
   const buffer = await file.arrayBuffer();
@@ -82,6 +168,17 @@ export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
 
   if (names.length === 0) {
     throw new UnsupportedFormatError("Aucune image trouvée dans cette archive.");
+  }
+
+  const comicInfoName = format === "cbz" ? findCbzComicInfoName(buffer) : await findCbrComicInfoName(buffer);
+  let comicInfo: ComicInfo | null = null;
+  if (comicInfoName) {
+    try {
+      const extracted = format === "cbz" ? extractCbzSingle(buffer, comicInfoName) : await extractCbrSingle(buffer, comicInfoName);
+      if (extracted) comicInfo = parseComicInfoXml(new TextDecoder().decode(extracted.data));
+    } catch {
+      // ComicInfo.xml présent mais illisible - on continue sans métadonnées
+    }
   }
 
   const cache = new Map<number, Page>();
@@ -99,6 +196,7 @@ export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
   return {
     format,
     pageCount: names.length,
+    comicInfo,
 
     peekPage(index) {
       return cache.get(index);
@@ -139,6 +237,7 @@ export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
 
 export async function getCoverPage(file: ArchiveSource): Promise<Page | null> {
   const format = await resolveFormat(file);
+  if (format === "pdf") return getPdfCoverFast(file);
   if (format !== "cbz" && format !== "cbr") return null;
 
   const image = format === "cbz" ? await getCbzCoverFast(file) : await getCbrCoverFast(file);
@@ -168,6 +267,22 @@ function collectCbzImageNames(buffer: ArrayBuffer): string[] {
     },
   });
   return names.sort(compareNatural);
+}
+
+// A second, separate listing pass (rather than folded into
+// collectCbzImageNames above) so that function's signature and its other
+// caller (the cover-fast fallback, which has no use for ComicInfo.xml) stay
+// untouched. unzipSync's filter never decompresses skipped entries, so this
+// costs no more than reading the directory itself.
+function findCbzComicInfoName(buffer: ArrayBuffer): string | null {
+  let found: string | null = null;
+  unzipSync(new Uint8Array(buffer), {
+    filter(entry) {
+      if (!found && !entry.name.endsWith("/") && COMICINFO_RE.test(entry.name)) found = entry.name;
+      return false;
+    },
+  });
+  return found;
 }
 
 function extractCbzSingle(buffer: ArrayBuffer, name: string): ExtractedImage | null {
@@ -307,6 +422,15 @@ async function collectCbrImageNames(buffer: ArrayBuffer): Promise<string[]> {
   return names.sort(compareNatural);
 }
 
+async function findCbrComicInfoName(buffer: ArrayBuffer): Promise<string | null> {
+  const extractor = await openCbrExtractor(buffer);
+  const { fileHeaders } = extractor.getFileList();
+  for (const header of fileHeaders) {
+    if (!header.flags.directory && COMICINFO_RE.test(header.name)) return header.name;
+  }
+  return null;
+}
+
 async function extractCbrSingle(buffer: ArrayBuffer, name: string): Promise<ExtractedImage | null> {
   const extractor = await openCbrExtractor(buffer);
 
@@ -380,6 +504,133 @@ async function getCbrCoverFast(file: ArchiveSource): Promise<ExtractedImage | nu
   const names = await collectCbrImageNames(buffer);
   if (names.length === 0) return null;
   return extractCbrSingle(buffer, names[0]);
+}
+
+// Target the long edge of the rendered page at roughly this many pixels — high
+// enough to stay crisp when zoomed in on a comic-sized scan, without rendering
+// arbitrarily large canvases for oversized source PDFs (capped by PDF_MAX_SCALE).
+const PDF_TARGET_LONG_EDGE = 2200;
+const PDF_MIN_SCALE = 1;
+const PDF_MAX_SCALE = 4;
+
+async function renderPdfPage(doc: PDFDocumentProxy, pageNumber: number): Promise<Page> {
+  const page = await doc.getPage(pageNumber);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = Math.min(
+    PDF_MAX_SCALE,
+    Math.max(PDF_MIN_SCALE, PDF_TARGET_LONG_EDGE / Math.max(baseViewport.width, baseViewport.height))
+  );
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new UnsupportedFormatError(`Impossible de générer le rendu de la page ${pageNumber} du PDF.`);
+  await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+  if (!blob) throw new UnsupportedFormatError(`Impossible de générer le rendu de la page ${pageNumber} du PDF.`);
+  return { name: `page-${pageNumber}.jpg`, url: URL.createObjectURL(blob) };
+}
+
+interface PdfDocumentHandle {
+  doc: PDFDocumentProxy;
+  // PDFDocumentProxy itself has no destroy() in this pdfjs-dist version — cleanup
+  // goes through the loading task that produced it instead.
+  destroy(): void;
+}
+
+async function loadPdfDocument(file: ArchiveSource): Promise<PdfDocumentHandle> {
+  const buffer = await file.arrayBuffer();
+  const loadingTask = getDocument({ data: buffer });
+  try {
+    const doc = await loadingTask.promise;
+    return { doc, destroy: () => void loadingTask.destroy() };
+  } catch {
+    throw new UnsupportedFormatError("Impossible de lire ce fichier PDF (fichier corrompu ou protégé par mot de passe).");
+  }
+}
+
+async function openPdfArchive(file: ArchiveSource): Promise<OpenedArchive> {
+  const { doc, destroy } = await loadPdfDocument(file);
+  if (doc.numPages === 0) {
+    destroy();
+    throw new UnsupportedFormatError("Ce PDF ne contient aucune page.");
+  }
+
+  let comicInfo: ComicInfo | null = null;
+  try {
+    const meta = await doc.getMetadata();
+    const title = (meta.info as Record<string, unknown>)?.Title;
+    comicInfo = typeof title === "string" && title.trim() ? { title: title.trim() } : null;
+  } catch {
+    // Métadonnées absentes ou illisibles - on continue sans
+  }
+
+  const cache = new Map<number, Page>();
+  const pending = new Map<number, Promise<Page>>();
+
+  return {
+    format: "pdf",
+    pageCount: doc.numPages,
+    comicInfo,
+
+    peekPage(index) {
+      return cache.get(index);
+    },
+
+    async getPage(index) {
+      const cached = cache.get(index);
+      if (cached) return cached;
+      const inFlight = pending.get(index);
+      if (inFlight) return inFlight;
+
+      const promise = renderPdfPage(doc, index + 1)
+        .then((page) => {
+          cache.set(index, page);
+          return page;
+        })
+        .finally(() => pending.delete(index));
+      pending.set(index, promise);
+      return promise;
+    },
+
+    evictOutside(keepMin, keepMax) {
+      for (const index of [...cache.keys()]) {
+        if (index < keepMin || index > keepMax) {
+          URL.revokeObjectURL(cache.get(index)!.url);
+          cache.delete(index);
+        }
+      }
+    },
+
+    dispose() {
+      for (const page of cache.values()) URL.revokeObjectURL(page.url);
+      cache.clear();
+      pending.clear();
+      destroy();
+    },
+  };
+}
+
+// No cheap "just the first page" shortcut exists for PDF the way the ZIP/RAR
+// fast paths exploit their archive layout — the whole file has to be parsed
+// to reach page 1. The one-time cost is bounded by IndexedDB cover caching
+// (see lib/coverCache.ts), so this only ever pays once per file.
+async function getPdfCoverFast(file: ArchiveSource): Promise<Page | null> {
+  let handle: PdfDocumentHandle;
+  try {
+    handle = await loadPdfDocument(file);
+  } catch {
+    return null;
+  }
+  try {
+    if (handle.doc.numPages === 0) return null;
+    return await renderPdfPage(handle.doc, 1);
+  } catch {
+    return null;
+  } finally {
+    handle.destroy();
+  }
 }
 
 function mimeFromName(name: string): string {

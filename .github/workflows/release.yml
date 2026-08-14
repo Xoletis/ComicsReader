@@ -44,3 +44,83 @@ jobs:
             Installateurs Windows pour cette version — téléchargez le `.exe` (NSIS) ou le `.msi`, selon votre préférence.
           releaseDraft: false
           prerelease: false
+
+  android:
+    runs-on: ubuntu-latest
+    # Waits for the desktop job so the GitHub Release already exists by the
+    # time this uploads the APK to it, instead of racing to create it too.
+    needs: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27d
+          local-cache: true
+
+      # A known issue with this NDK's prebuilt clang toolchain on Linux
+      # runners — its symlinks point at a path that doesn't exist inside the
+      # extracted archive. Same fix Tauri's own CI uses.
+      - name: Fix NDK toolchain symlinks
+        run: |
+          directory="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          find "$directory" -type l | while read -r link; do
+            target="$directory/$(basename "$(readlink "$link")")"
+            ln -sf "$target" "$link"
+          done
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Only runs once the three ANDROID_KEY_* secrets are set on the repo
+      # (see src-tauri/gen/android/app/build.gradle.kts) — until then the
+      # build below just produces an unsigned APK, which is still fine for
+      # manual sideloading/testing.
+      - name: Set up Android signing
+        if: ${{ secrets.ANDROID_KEY_BASE64 != '' }}
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+        run: |
+          cd src-tauri/gen/android
+          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
+          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+          base64 -d <<< "$ANDROID_KEY_BASE64" > "$RUNNER_TEMP/keystore.jks"
+          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+
+      - name: Build Android APK
+        env:
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: npx tauri android build --apk
+
+      - name: Upload APK to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: src-tauri/gen/android/app/build/outputs/apk/**/*.apk

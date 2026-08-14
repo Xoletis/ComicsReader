@@ -1,0 +1,33 @@
+{
+  "id": "dracula",
+  "name": "Dracula",
+  "font": "'Cascadia Code', 'Fira Code', Consolas, 'Courier New', monospace",
+  "colors": {
+    "bg": "#282a36",
+    "bgAlt": "#21222c",
+    "bgModal": "#282a36",
+    "bgPanel": "#21222c",
+    "bgInset": "#191a21",
+    "bgBlack": "#191a21",
+    "surface": "#44475a",
+    "surfaceHover": "#4d5066",
+    "surfaceHover2": "#565970",
+    "accentBg": "#3b3752",
+    "accentBorder": "#6272a4",
+    "border": "#44475a",
+    "accent": "#bd93f9",
+    "accentHover": "#a679e8",
+    "accentText": "#bd93f9",
+    "accentTextSoft": "#e0c9ff",
+    "text": "#f8f8f2",
+    "textStrong": "#ffffff",
+    "textSecondary": "#d6d6d2",
+    "textMuted": "#a8a8a2",
+    "textDim": "#8f92a8",
+    "textDimmer": "#7982a3",
+    "textFaint": "#6272a4",
+    "danger": "#ff5555",
+    "dangerStrong": "#ff5555",
+    "dangerBorder": "#cc4444"
+  }
+}

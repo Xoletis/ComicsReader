@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { getCoverPage } from "../lib/archive";
+import { cacheCoverInBackground, loadCachedCoverUrl } from "../lib/coverCache";
 import {
   ComicEntry,
   createFolder,
@@ -21,6 +22,11 @@ import {
 } from "../lib/library";
 import { folderColorKey, loadFolderColors, saveFolderColor } from "../lib/folderColors";
 import { loadProgressByKey, ReaderProgress, renameProgressKey } from "../lib/progress";
+import { renameBookmarksKey } from "../lib/bookmarks";
+import { deriveReadStatus, loadReadOverride, renameReadStatusKey, saveReadOverride } from "../lib/readStatus";
+import { loadLibraryViewPrefs, saveLibraryViewPrefs, SortBy, StatusFilter } from "../lib/libraryView";
+import { compareNatural } from "../lib/naturalSort";
+import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import FolderColorModal from "./FolderColorModal";
 import FolderIcon from "./FolderIcon";
 import InfoModal from "./InfoModal";
@@ -34,10 +40,17 @@ type Status = "checking" | "unsupported" | "disconnected" | "needs-permission" |
 const COVER_CONCURRENCY = 4;
 const INTERNAL_DND_TYPE = "application/x-cbreader-entries";
 const TREE_VISIBLE_KEY = "cbreader:libraryTreeVisible";
+const AUTO_WATCH_KEY = "cbreader:libraryAutoWatch";
+const AUTO_WATCH_INTERVAL_MS = 5000;
 
 interface Props {
   onOpenFile: (file: File) => void;
   refreshSignal: number;
+  onOpenSettings: () => void;
+  onOpenBookmarksOverview: () => void;
+  onOpenStats: () => void;
+  shortcutOverrides: ShortcutOverrides;
+  active: boolean;
 }
 
 interface MenuTarget {
@@ -56,7 +69,15 @@ function parseKey(key: string): MoveItem {
   return { name, isDirectory };
 }
 
-export default function Library({ onOpenFile, refreshSignal }: Props) {
+export default function Library({
+  onOpenFile,
+  refreshSignal,
+  onOpenSettings,
+  onOpenBookmarksOverview,
+  onOpenStats,
+  shortcutOverrides,
+  active,
+}: Props) {
   const [status, setStatus] = useState<Status>("checking");
   const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [path, setPath] = useState<PathEntry[]>([]);
@@ -67,8 +88,19 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
   const [covers, setCovers] = useState<Map<string, string>>(new Map());
   const [coverErrors, setCoverErrors] = useState<Set<string>>(new Set());
   const [progressByName, setProgressByName] = useState<Map<string, ReaderProgress>>(new Map());
+  // Read-status overrides live directly in localStorage (lib/readStatus.ts),
+  // not in React state — this just forces a re-render (and, via the memo dep
+  // below, a re-sort/re-filter) after toggling one, so the badge and the
+  // "Non lus"/"Lus"/trier par statut views pick it up.
+  const [readStatusVersion, bumpReadStatusVersion] = useReducer((n: number) => n + 1, 0);
+  const [viewPrefs, setViewPrefs] = useState(() => loadLibraryViewPrefs());
   const coversRef = useRef(covers);
   const sizeByNameRef = useRef<Map<string, number>>(new Map());
+  // Populated alongside sizeByNameRef in the same cover-loading effect below —
+  // used for "date d'ajout" sorting (the File System Access API exposes no
+  // creation time, so last-modified is the closest available proxy) and as
+  // the cover cache's invalidation signal.
+  const lastModifiedByNameRef = useRef<Map<string, number>>(new Map());
 
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<MenuTarget | null>(null);
@@ -84,6 +116,9 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
   const [contextMenuPos, setContextMenuPos] = useState<{ left: number; top: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const [treeVisible, setTreeVisible] = useState(() => localStorage.getItem(TREE_VISIBLE_KEY) === "1");
+  // Defaults to on — the point of the feature is not having to remember to
+  // click Actualiser, so it should work without the user ever touching this.
+  const [autoWatch, setAutoWatch] = useState(() => localStorage.getItem(AUTO_WATCH_KEY) !== "0");
   const [searchOpen, setSearchOpen] = useState(false);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -169,6 +204,7 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
     setCoverErrors(new Set());
     setProgressByName(new Map());
     sizeByNameRef.current = new Map();
+    lastModifiedByNameRef.current = new Map();
     if (comics.length === 0) return;
 
     const cancelled = { current: false };
@@ -181,8 +217,22 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
         try {
           const file = await entry.handle.getFile();
           sizeByNameRef.current.set(entry.name, file.size);
+          lastModifiedByNameRef.current.set(entry.name, file.lastModified);
           const progress = loadProgressByKey(entry.name, file.size);
           if (progress) setProgressByName((prev) => new Map(prev).set(entry.name, progress));
+
+          // A cache hit skips extracting-from-archive entirely — by far the
+          // slowest part of showing a library grid, since it means unzipping
+          // (or un-RARing) into the comic just to read its first image.
+          const cachedUrl = await loadCachedCoverUrl(entry.name, file.size, file.lastModified);
+          if (cachedUrl) {
+            if (cancelled.current) {
+              URL.revokeObjectURL(cachedUrl);
+              return;
+            }
+            setCovers((prev) => new Map(prev).set(entry.name, cachedUrl));
+            continue;
+          }
 
           const cover = await getCoverPage(file);
           if (cancelled.current) {
@@ -191,6 +241,7 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
           }
           if (cover) {
             setCovers((prev) => new Map(prev).set(entry.name, cover.url));
+            cacheCoverInBackground(entry.name, file.size, file.lastModified, cover.url);
           } else {
             setCoverErrors((prev) => new Set(prev).add(entry.name));
           }
@@ -401,6 +452,43 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
     });
   }, []);
 
+  const toggleAutoWatch = useCallback(() => {
+    setAutoWatch((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(AUTO_WATCH_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      return next;
+    });
+  }, []);
+
+  // Polls the current folder for new/removed entries instead of requiring a
+  // manual Actualiser click. Cheap: listEntries() only reads directory
+  // entries, never file contents, so this doesn't touch archive data at all
+  // — and the functional setState form below only actually re-renders (and
+  // re-triggers the cover-loading effect) when the set of names genuinely
+  // changed, not on every tick.
+  useEffect(() => {
+    if (!autoWatch || status !== "connected" || !currentHandle) return;
+    const differs = (a: { name: string }[], b: { name: string }[]) => {
+      if (a.length !== b.length) return true;
+      const names = new Set(a.map((e) => e.name));
+      return !b.every((e) => names.has(e.name));
+    };
+    const interval = window.setInterval(async () => {
+      try {
+        const fresh = await listEntries(currentHandle);
+        setFolders((prev) => (differs(prev, fresh.folders) ? fresh.folders : prev));
+        setComics((prev) => (differs(prev, fresh.comics) ? fresh.comics : prev));
+      } catch {
+        // le dossier a pu devenir temporairement inaccessible - on réessaiera au prochain tick
+      }
+    }, AUTO_WATCH_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [autoWatch, status, currentHandle]);
+
   const openComic = useCallback(
     async (entry: ComicEntry) => {
       try {
@@ -474,6 +562,62 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
     setInfoTarget(target);
   }, []);
 
+  const toggleReadStatusFor = useCallback(
+    (name: string) => {
+      const size = sizeByNameRef.current.get(name);
+      if (size === undefined) return;
+      const status = deriveReadStatus(loadReadOverride(name, size), progressByName.get(name) ?? null);
+      saveReadOverride(name, size, status === "read" ? false : true);
+      bumpReadStatusVersion();
+    },
+    [progressByName]
+  );
+
+  const updateViewPrefs = useCallback((patch: Partial<typeof viewPrefs>) => {
+    setViewPrefs((prev) => {
+      const next = { ...prev, ...patch };
+      saveLibraryViewPrefs(next);
+      return next;
+    });
+  }, []);
+
+  const readStatusOf = useCallback(
+    (name: string) => {
+      const size = sizeByNameRef.current.get(name);
+      return size !== undefined ? deriveReadStatus(loadReadOverride(name, size), progressByName.get(name) ?? null) : "unread";
+    },
+    [progressByName]
+  );
+
+  // Sorting/filtering happen here rather than in listEntries — size,
+  // lastModified and read status only become known progressively as covers
+  // load in (see the cover effect above). Memoized against covers/coverErrors
+  // (not just comics/viewPrefs) because those are exactly the states that
+  // change on every single entry as the loading worker populates the
+  // size/lastModified refs this reads — so the memo still refreshes as data
+  // streams in, but no longer re-sorts (with a natural-sort string compare,
+  // and a localStorage read per comic for status/filter) on every unrelated
+  // re-render — a hover, a context-menu toggle, a rename dialog keystroke —
+  // which is what made a large library feel sluggish to interact with.
+  const visibleComics = useMemo(() => {
+    const filtered = viewPrefs.filter === "all" ? comics : comics.filter((entry) => readStatusOf(entry.name) === viewPrefs.filter);
+    const dirMul = viewPrefs.sortDir === "asc" ? 1 : -1;
+    const statusRank = (status: ReturnType<typeof readStatusOf>) => (status === "unread" ? 0 : status === "in-progress" ? 1 : 2);
+    return [...filtered].sort((a, b) => {
+      switch (viewPrefs.sortBy) {
+        case "date":
+          return ((lastModifiedByNameRef.current.get(a.name) ?? 0) - (lastModifiedByNameRef.current.get(b.name) ?? 0)) * dirMul;
+        case "size":
+          return ((sizeByNameRef.current.get(a.name) ?? 0) - (sizeByNameRef.current.get(b.name) ?? 0)) * dirMul;
+        case "readStatus":
+          return (statusRank(readStatusOf(a.name)) - statusRank(readStatusOf(b.name))) * dirMul;
+        default:
+          return compareNatural(a.name, b.name) * dirMul;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- covers/coverErrors stand in for the progressively-populated size/lastModified refs
+  }, [comics, viewPrefs, readStatusOf, covers, coverErrors, readStatusVersion]);
+
   const handleColorSelect = useCallback(
     (color: string | null) => {
       if (colorTarget === null) return;
@@ -534,7 +678,7 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
 
       const files = Array.from(e.dataTransfer.files).filter((file) => isComicFile(file.name));
       if (files.length === 0) {
-        setPickError("Seuls les fichiers .cbz/.cbr peuvent être déposés dans un dossier.");
+        setPickError("Seuls les fichiers .cbz/.cbr/.pdf peuvent être déposés dans un dossier.");
         return;
       }
       setActionBusy(true);
@@ -568,7 +712,7 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
     }
     const comicFiles = files.filter((file) => isComicFile(file.name));
     if (comicFiles.length === 0) {
-      setPickError("Seuls les fichiers .cbz/.cbr peuvent être importés.");
+      setPickError("Seuls les fichiers .cbz/.cbr/.pdf peuvent être importés.");
       return;
     }
     setActionBusy(true);
@@ -677,7 +821,11 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
         await renameEntry(currentHandle, renameTarget.name, trimmed, renameTarget.isDirectory);
         if (!renameTarget.isDirectory) {
           const size = sizeByNameRef.current.get(renameTarget.name);
-          if (size !== undefined) renameProgressKey(renameTarget.name, trimmed, size);
+          if (size !== undefined) {
+            renameProgressKey(renameTarget.name, trimmed, size);
+            renameBookmarksKey(renameTarget.name, trimmed, size);
+            renameReadStatusKey(renameTarget.name, trimmed, size);
+          }
         }
         setRenameTarget(null);
         await refreshEntries(currentHandle);
@@ -723,6 +871,44 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
     [currentHandle, moveItems, refreshEntries]
   );
 
+  const libraryActionHandlers = useMemo<Record<string, () => void>>(
+    () => ({
+      refreshLibrary: handleRefresh,
+      newFolder: () => setCreatingFolder(true),
+      searchLibrary: () => setSearchOpen(true),
+      toggleLibraryTree: toggleTree,
+      moveSelection: startBulkMove,
+      deleteSelection: handleBulkDelete,
+    }),
+    [handleRefresh, toggleTree, startBulkMove, handleBulkDelete]
+  );
+
+  const comboToAction = useMemo(() => buildComboToActionMap(shortcutOverrides), [shortcutOverrides]);
+
+  // Any overlay that owns its own text input or confirmation flow suppresses
+  // these — otherwise, say, typing "n" while renaming something would also
+  // pop open "new folder" behind it. Library.tsx stays mounted (just hidden)
+  // while the reader is open (see App.tsx), so `active` additionally makes
+  // sure a key pressed while reading never fires a library action no one can
+  // see happen.
+  const anyOverlayOpen =
+    !!menuFor || !!renameTarget || !!moveItems || creatingFolder || !!colorTarget || !!infoTarget || !!contextMenu || searchOpen;
+
+  useEffect(() => {
+    if (!active || status !== "connected" || anyOverlayOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (document.activeElement instanceof HTMLInputElement) return;
+      const combo = comboFromEvent(e);
+      const actionId = combo && comboToAction.get(combo);
+      const handler = actionId && libraryActionHandlers[actionId];
+      if (!handler) return;
+      e.preventDefault();
+      handler();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active, status, anyOverlayOpen, comboToAction, libraryActionHandlers]);
+
   return (
     <section
       className={`library ${marqueeRect ? "library--dragging" : ""}`}
@@ -731,44 +917,191 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
       onMouseDown={handleGridMouseDown}
     >
       <div className="library__main">
+      {status === "connected" && path.length > 0 && (
+        <div className="library__breadcrumb-row">
+          <span className="library__breadcrumb">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+            </svg>
+            {path.map((entry, i) => (
+              <span key={i}>
+                {i > 0 && <span className="library__breadcrumb-sep">/</span>}
+                <button
+                  type="button"
+                  className="library__breadcrumb-crumb"
+                  disabled={i === path.length - 1}
+                  onClick={() => navigateTo(path.slice(0, i + 1))}
+                >
+                  {entry.name}
+                </button>
+              </span>
+            ))}
+            <span className="library__breadcrumb-count">({comics.length})</span>
+          </span>
+        </div>
+      )}
       <div className="library__header">
         <h2>Bibliothèque</h2>
         {status === "connected" && path.length > 0 && (
           <div className="library__folder-controls">
-            <span className="library__breadcrumb">
-              📁{" "}
-              {path.map((entry, i) => (
-                <span key={i}>
-                  {i > 0 && <span className="library__breadcrumb-sep">/</span>}
-                  <button
-                    type="button"
-                    className="library__breadcrumb-crumb"
-                    disabled={i === path.length - 1}
-                    onClick={() => navigateTo(path.slice(0, i + 1))}
-                  >
-                    {entry.name}
-                  </button>
-                </span>
-              ))}{" "}
-              ({comics.length})
+            <span className="library__toolbar-group">
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={() => setCreatingFolder(true)}
+                aria-label="Nouveau dossier"
+                title="Nouveau dossier"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                  <line x1="12" y1="11" x2="12" y2="15" />
+                  <line x1="10" y1="13" x2="14" y2="13" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={handleRefresh}
+                aria-label="Actualiser"
+                title="Actualiser"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={handlePickFolder}
+                aria-label="Changer de dossier"
+                title="Changer de dossier"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H3z" />
+                  <path d="M3 8l1.5 10.5A2 2 0 0 0 6.5 20h11a2 2 0 0 0 2-1.5L21 8" />
+                </svg>
+              </button>
             </span>
-            <button type="button" onClick={() => setCreatingFolder(true)}>
-              Nouveau dossier
-            </button>
-            <button type="button" onClick={handleRefresh}>
-              Actualiser
-            </button>
-            <button type="button" onClick={handlePickFolder}>
-              Changer de dossier
-            </button>
-            <button type="button" className={treeVisible ? "active" : ""} onClick={toggleTree}>
-              Arborescence
-            </button>
-            <button type="button" onClick={() => setSearchOpen(true)}>
-              Rechercher
-            </button>
+
+            <span className="library__toolbar-group">
+              <button
+                type="button"
+                className={`library__action-btn library__action-btn--icon-only${treeVisible ? " active" : ""}`}
+                onClick={toggleTree}
+                aria-label="Arborescence"
+                title="Arborescence"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="6" height="6" rx="1" />
+                  <line x1="3" y1="16" x2="9" y2="16" />
+                  <line x1="13" y1="6" x2="21" y2="6" />
+                  <line x1="13" y1="12" x2="21" y2="12" />
+                  <line x1="13" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={() => setSearchOpen(true)}
+                aria-label="Rechercher"
+                title="Rechercher"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="7" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`library__action-btn library__action-btn--icon-only${autoWatch ? " active" : ""}`}
+                onClick={toggleAutoWatch}
+                aria-label="Surveillance auto"
+                title="Surveillance auto — détecte automatiquement les nouveaux fichiers, sans avoir à cliquer sur Actualiser"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </span>
+
+            <span className="library__toolbar-group">
+              <label className="library__sort-control" title="Trier par">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="4" y1="6" x2="20" y2="6" />
+                  <line x1="4" y1="12" x2="14" y2="12" />
+                  <line x1="4" y1="18" x2="8" y2="18" />
+                </svg>
+                <select value={viewPrefs.sortBy} onChange={(e) => updateViewPrefs({ sortBy: e.target.value as SortBy })}>
+                  <option value="name">Nom</option>
+                  <option value="date">Date d'ajout</option>
+                  <option value="size">Taille</option>
+                  <option value="readStatus">Statut de lecture</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={() => updateViewPrefs({ sortDir: viewPrefs.sortDir === "asc" ? "desc" : "asc" })}
+                aria-label={viewPrefs.sortDir === "asc" ? "Ordre croissant" : "Ordre décroissant"}
+                title={viewPrefs.sortDir === "asc" ? "Ordre croissant" : "Ordre décroissant"}
+              >
+                {viewPrefs.sortDir === "asc" ? "↑" : "↓"}
+              </button>
+              <label className="library__sort-control" title="Filtrer par statut">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="3 4 21 4 14 12 14 19 10 21 10 12 3 4" />
+                </svg>
+                <select value={viewPrefs.filter} onChange={(e) => updateViewPrefs({ filter: e.target.value as StatusFilter })}>
+                  <option value="all">Tous</option>
+                  <option value="unread">Non lus</option>
+                  <option value="in-progress">En cours</option>
+                  <option value="read">Lus</option>
+                </select>
+              </label>
+            </span>
           </div>
         )}
+        <span className="library__header-actions">
+          <button
+            type="button"
+            className="toolbar__icon-btn"
+            onClick={onOpenBookmarksOverview}
+            aria-label="Tous les marque-pages"
+            title="Tous les marque-pages"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 3h12v18l-6-4-6 4V3z" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="toolbar__icon-btn"
+            onClick={onOpenStats}
+            aria-label="Statistiques de lecture"
+            title="Statistiques de lecture"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="5" y1="20" x2="5" y2="12" />
+              <line x1="12" y1="20" x2="12" y2="6" />
+              <line x1="19" y1="20" x2="19" y2="14" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="toolbar__icon-btn"
+            onClick={onOpenSettings}
+            aria-label="Configuration"
+            title="Configuration"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+        </span>
       </div>
 
       {selected.size > 0 && (
@@ -908,9 +1241,14 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
 
             {comics.length > 0 && (
               <div className="library__section">
-                <h3 className="library__section-title">Comics</h3>
+                <h3 className="library__section-title">
+                  Comics {viewPrefs.filter !== "all" ? `(${visibleComics.length}/${comics.length})` : `(${comics.length})`}
+                </h3>
+                {visibleComics.length === 0 ? (
+                  <p className="appearance-tab__hint">Aucun comic ne correspond au filtre sélectionné.</p>
+                ) : (
                 <div className="library__grid library__grid--comics">
-                  {comics.map((entry) => {
+                  {visibleComics.map((entry) => {
                     const key = `comic:${entry.name}`;
                     const isSelected = selected.has(key);
                     const progress = progressByName.get(entry.name);
@@ -918,6 +1256,8 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
                       progress && progress.pageCount > 0
                         ? Math.min(100, Math.round(((progress.pageIndex + 1) / progress.pageCount) * 100))
                         : null;
+                    const size = sizeByNameRef.current.get(entry.name);
+                    const readStatus = size !== undefined ? deriveReadStatus(loadReadOverride(entry.name, size), progress ?? null) : "unread";
                     return (
                       <div
                         key={key}
@@ -956,6 +1296,14 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
                                 <span className="comic-card__progress-fill" style={{ width: `${percent}%` }} />
                               </span>
                             )}
+                            {readStatus !== "in-progress" && (
+                              <span
+                                className={`comic-card__read-badge comic-card__read-badge--${readStatus}`}
+                                title={readStatus === "read" ? "Lu" : "Non lu"}
+                              >
+                                {readStatus === "read" ? "✓" : ""}
+                              </span>
+                            )}
                           </span>
                           <span className="comic-card__name">{entry.name}</span>
                         </button>
@@ -973,6 +1321,15 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
                           <div className="entry-menu">
                             <button type="button" onClick={() => startInfo({ name: entry.name, isDirectory: false })}>
                               Infos
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuFor(null);
+                                toggleReadStatusFor(entry.name);
+                              }}
+                            >
+                              {readStatus === "read" ? "Marquer comme non lu" : "Marquer comme lu"}
                             </button>
                             <button type="button" onClick={() => startRename({ name: entry.name, isDirectory: false })}>
                               Renommer
@@ -993,6 +1350,7 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
                     );
                   })}
                 </div>
+                )}
               </div>
             )}
           </div>
@@ -1058,6 +1416,20 @@ export default function Library({ onOpenFile, refreshSignal }: Props) {
                     Couleur
                   </button>
                 )}
+                {!contextMenu.target.isDirectory &&
+                  (() => {
+                    const targetName = contextMenu.target.name;
+                    const targetSize = sizeByNameRef.current.get(targetName);
+                    const targetStatus =
+                      targetSize !== undefined
+                        ? deriveReadStatus(loadReadOverride(targetName, targetSize), progressByName.get(targetName) ?? null)
+                        : "unread";
+                    return (
+                      <button type="button" onClick={() => toggleReadStatusFor(targetName)}>
+                        {targetStatus === "read" ? "Marquer comme non lu" : "Marquer comme lu"}
+                      </button>
+                    );
+                  })()}
                 <button type="button" onClick={() => startRename(contextMenu.target)}>
                   Renommer
                 </button>

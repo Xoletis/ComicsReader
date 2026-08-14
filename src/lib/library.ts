@@ -1,3 +1,4 @@
+import { withStore } from "./db";
 import { compareNatural } from "./naturalSort";
 
 export interface ComicEntry {
@@ -30,12 +31,9 @@ export interface SearchResult {
 
 export type PermissionState = "granted" | "prompt" | "denied";
 
-const COMIC_EXT_RE = /\.(cbz|cbr|zip|rar)$/i;
+const COMIC_EXT_RE = /\.(cbz|cbr|zip|rar|pdf)$/i;
 const INVALID_NAME_RE = /[<>:"/\\|?*\x00-\x1F]/;
 
-const DB_NAME = "cbreader";
-const DB_VERSION = 1;
-const STORE_NAME = "library";
 const HANDLE_KEY = "directoryHandle";
 
 export function isFileSystemAccessSupported(): boolean {
@@ -44,31 +42,6 @@ export function isFileSystemAccessSupported(): boolean {
 
 export function isComicFile(name: string): boolean {
   return COMIC_EXT_RE.test(name);
-}
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      request.result.createObjectStore(STORE_NAME);
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function withStore<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-  const db = await openDb();
-  try {
-    return await new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, mode);
-      const request = fn(tx.objectStore(STORE_NAME));
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  } finally {
-    db.close();
-  }
 }
 
 export async function saveDirectoryHandle(handle: FileSystemDirectoryHandle): Promise<void> {
@@ -107,7 +80,7 @@ export async function pickFilesToImport(): Promise<File[]> {
     types: [
       {
         description: "Comics",
-        accept: { "application/octet-stream": [".cbz", ".cbr", ".zip", ".rar"] },
+        accept: { "application/octet-stream": [".cbz", ".cbr", ".zip", ".rar", ".pdf"] },
       },
     ],
   });
