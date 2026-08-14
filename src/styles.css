@@ -351,22 +351,95 @@ button.active {
   flex-wrap: wrap;
 }
 
+/* Visually clusters related actions (dossier / vue / tri) — a left border
+   reads as a divider without needing a separate element, and only applies
+   between groups (never before the first) so it doesn't double up with the
+   breadcrumb chip's own edge. */
+.library__toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.library__toolbar-group + .library__toolbar-group {
+  padding-left: 10px;
+  border-left: 1px solid var(--color-border);
+}
+
+.library__action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 11px;
+  background: var(--color-surface);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 0.83rem;
+  white-space: nowrap;
+}
+
+.library__action-btn svg {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.library__action-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover-2);
+  color: var(--color-text);
+}
+
+.library__action-btn:hover:not(:disabled) svg {
+  opacity: 1;
+}
+
+.library__action-btn.active {
+  background: var(--color-accent-bg);
+  border-color: var(--color-accent-border);
+  color: var(--color-accent-text);
+}
+
+.library__action-btn.active svg {
+  opacity: 1;
+}
+
+.library__action-btn--icon-only {
+  padding: 6px 9px;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
 .library__sort-control {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 0.85rem;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 10px;
+  background: var(--color-surface);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 0.83rem;
   color: var(--color-text-secondary);
 }
 
+.library__sort-control svg {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
 .library__sort-control select {
-  padding: 4px 6px;
-  background: var(--color-surface);
+  padding: 0;
+  background: transparent;
   color: var(--color-text);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border: none;
+  border-radius: 0;
   font-family: inherit;
-  font-size: 0.85rem;
+  font-size: 0.83rem;
+}
+
+.library__sort-control select:focus {
+  outline: none;
 }
 
 .library__folder-name {
@@ -560,19 +633,34 @@ button.active {
 
 .comic-card__menu-btn {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  padding: 2px 8px;
-  line-height: 1.4;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  line-height: 1;
+  font-size: 1rem;
   background: rgba(0, 0, 0, 0.55);
-  border-color: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  color: #fff;
   opacity: 0;
-  transition: opacity 0.15s;
+  transform: scale(0.85);
+  transition: opacity 0.15s, transform 0.15s, background 0.15s;
 }
 
 .comic-card:hover .comic-card__menu-btn,
 .comic-card:focus-within .comic-card__menu-btn {
   opacity: 1;
+  transform: scale(1);
+}
+
+.comic-card__menu-btn:hover {
+  background: rgba(0, 0, 0, 0.8);
+  border-color: rgba(255, 255, 255, 0.4);
 }
 
 .comic-card--folder .comic-card__open {
@@ -657,12 +745,24 @@ button.active {
 }
 
 .library__breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 6px 10px;
+  background: var(--color-bg-inset);
+  border-radius: 6px;
   color: var(--color-text-secondary);
   font-size: 0.9rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 360px;
+}
+
+.library__breadcrumb svg {
+  flex-shrink: 0;
+  opacity: 0.75;
 }
 
 .library__breadcrumb-crumb {
@@ -687,6 +787,12 @@ button.active {
 .library__breadcrumb-sep {
   color: var(--color-text-faint);
   margin: 0 2px;
+}
+
+.library__breadcrumb-count {
+  flex-shrink: 0;
+  margin-left: 2px;
+  color: var(--color-text-dim);
 }
 
 .modal-overlay {
@@ -1308,12 +1414,15 @@ button.active {
   aspect-ratio: 2 / 3;
   background: var(--color-bg-alt);
   border: 1px solid var(--color-surface);
-  border-radius: 4px;
+  border-radius: 6px;
   overflow: hidden;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .comic-card:hover .comic-card__cover {
   border-color: var(--color-accent);
+  transform: translateY(-3px);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
 }
 
 .comic-card__cover img {
@@ -1359,8 +1468,8 @@ button.active {
 
 .comic-card__read-badge {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 6px;
+  left: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1387,6 +1496,11 @@ button.active {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.comic-card:hover .comic-card__name {
+  color: var(--color-text);
 }
 
 /* Reader */
