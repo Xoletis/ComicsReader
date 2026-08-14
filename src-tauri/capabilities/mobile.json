@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "enables the default permissions on Android/iOS — no updater/process permissions, since those plugins aren't registered there (see src/lib.rs)",
+  "windows": [
+    "main"
+  ],
+  "platforms": ["android", "iOS"],
+  "permissions": [
+    "core:default",
+    "fs:allow-app-read-recursive",
+    "fs:allow-app-write-recursive",
+    "fs:allow-app-meta-recursive"
+  ]
+}

@@ -9,6 +9,7 @@ interface Props {
   libraryRefreshSignal: number;
   onOpenSettings: () => void;
   onOpenBookmarksOverview: () => void;
+  onOpenStats: () => void;
   shortcutOverrides: ShortcutOverrides;
   active: boolean;
   recentFiles: RecentFile[];
@@ -23,6 +24,7 @@ export default function Home({
   libraryRefreshSignal,
   onOpenSettings,
   onOpenBookmarksOverview,
+  onOpenStats,
   shortcutOverrides,
   active,
   recentFiles,
@@ -45,6 +47,7 @@ export default function Home({
         refreshSignal={libraryRefreshSignal}
         onOpenSettings={onOpenSettings}
         onOpenBookmarksOverview={onOpenBookmarksOverview}
+        onOpenStats={onOpenStats}
         shortcutOverrides={shortcutOverrides}
         active={active}
       />

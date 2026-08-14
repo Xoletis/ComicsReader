@@ -23,7 +23,15 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = ["protocol-asset"] }
 tauri-plugin-log = "2"
+tauri-plugin-fs = "2"
+
+# Desktop-only: none of these three have a mobile implementation (confirmed
+# against each plugin's own platform gating), and the self-updating flow they
+# support doesn't map onto how Android/iOS apps get updated anyway. Kept out
+# of the mobile dependency graph entirely via the target filter, rather than
+# just skipping their registration in lib.rs, so `cargo`/`tauri android`
+# never has to build them (or their platform-specific transitive deps) at all.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
-tauri-plugin-fs = "2"

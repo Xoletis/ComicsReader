@@ -29,6 +29,7 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   { id: "nextBookmark", category: "Lire", label: "Marque-page suivant", defaultKey: "]" },
   { id: "prevBookmark", category: "Lire", label: "Marque-page précédent", defaultKey: "[" },
   { id: "toggleSlideshow", category: "Lire", label: "Diaporama automatique", defaultKey: "j" },
+  { id: "toggleReadStatus", category: "Lire", label: "Marquer comme lu / non lu", defaultKey: "q" },
   { id: "zoomIn", category: "Options", label: "Zoom avant", defaultKey: "+" },
   { id: "zoomOut", category: "Options", label: "Zoom arrière", defaultKey: "-" },
   { id: "fitWidth", category: "Options", label: "Zoom largeur", defaultKey: "w" },

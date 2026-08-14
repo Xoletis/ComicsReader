@@ -3,6 +3,7 @@ import BookmarksOverviewModal from "./components/BookmarksOverviewModal";
 import Home from "./components/Home";
 import Reader from "./components/Reader";
 import SettingsModal from "./components/SettingsModal";
+import StatsModal from "./components/StatsModal";
 import UpdateBanner from "./components/UpdateBanner";
 import { ArchiveSource, OpenedArchive, openArchive, UnsupportedFormatError } from "./lib/archive";
 import { Bookmark, loadBookmarks, saveBookmarks } from "./lib/bookmarks";
@@ -10,6 +11,7 @@ import { ComfortFilterId, loadComfortFilter, saveComfortFilter } from "./lib/com
 import { pathToSource, watchDesktopFileOpen } from "./lib/desktopOpen";
 import { loadProgress, ReaderProgress, saveProgress } from "./lib/progress";
 import { addRecentFile, clearRecentFiles, loadRecentFiles, RecentFile, removeRecentFile } from "./lib/recentFiles";
+import { loadReadOverride, saveReadOverride } from "./lib/readStatus";
 import { loadShortcutOverrides, ShortcutOverrides } from "./lib/shortcuts";
 import { loadPerformancePreset, PerformancePreset } from "./lib/performance";
 
@@ -27,6 +29,7 @@ export default function App() {
   const [comfortFilter, setComfortFilter] = useState<ComfortFilterId>(() => loadComfortFilter());
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(() => loadRecentFiles());
   const [showBookmarksOverview, setShowBookmarksOverview] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const archiveRef = useRef<OpenedArchive | null>(null);
   // Only entries opened via a real filesystem path (see lib/recentFiles.ts)
   // survive a restart; everything else (drag-and-drop, the plain file
@@ -87,6 +90,13 @@ export default function App() {
   const handleBookmarksChange = useCallback(
     (bookmarks: Bookmark[]) => {
       if (file) saveBookmarks(file, bookmarks);
+    },
+    [file]
+  );
+
+  const handleReadOverrideChange = useCallback(
+    (value: boolean | null) => {
+      if (file) saveReadOverride(file.name, file.size, value);
     },
     [file]
   );
@@ -195,6 +205,7 @@ export default function App() {
           libraryRefreshSignal={libraryRefreshSignal}
           onOpenSettings={() => setShowSettings(true)}
           onOpenBookmarksOverview={() => setShowBookmarksOverview(true)}
+          onOpenStats={() => setShowStats(true)}
           shortcutOverrides={shortcutOverrides}
           active={!archive}
           recentFiles={recentFiles}
@@ -218,6 +229,8 @@ export default function App() {
           comfortFilter={comfortFilter}
           initialBookmarks={loadBookmarks(file)}
           onBookmarksChange={handleBookmarksChange}
+          initialReadOverride={loadReadOverride(file.name, file.size)}
+          onReadOverrideChange={handleReadOverrideChange}
         />
       )}
       {openingName && (
@@ -241,6 +254,7 @@ export default function App() {
       {showBookmarksOverview && (
         <BookmarksOverviewModal onOpenBookmark={openBookmark} onClose={() => setShowBookmarksOverview(false)} />
       )}
+      {showStats && <StatsModal onClose={() => setShowStats(false)} />}
       <UpdateBanner />
     </>
   );

@@ -29,12 +29,21 @@ pub fn run() {
   // Note: log:: calls here are dropped — the logger isn't initialized until
   // .setup() runs below, so the initial file (if any) is only confirmed once
   // the frontend calls take_pending_open_file() and its own log line fires.
+  // A no-op on mobile: there's no CLI-args launch path there (Android opens
+  // files via Intents instead, not wired up yet — see take_pending_open_file).
   let initial_file = extract_file_arg(&std::env::args().collect::<Vec<_>>());
 
-  tauri::Builder::default()
+  let builder = tauri::Builder::default().plugin(tauri_plugin_fs::init());
+
+  // single-instance, updater and process are all desktop-only crates (they
+  // don't compile / have no mobile implementation) — the whole
+  // check-GitHub-releases-and-self-replace update flow they support doesn't
+  // map onto how Android/iOS apps get updated anyway (store or sideloaded
+  // APK), so this is a real platform split, not just a build-fix.
+  #[cfg(desktop)]
+  let builder = builder
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
-    .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
       // A second launch (e.g. double-clicking another comic while the app is
       // already open) is redirected here instead of opening a new window.
@@ -47,7 +56,9 @@ pub fn run() {
         log::info!("forwarding open-file-path -> {path}");
         let _ = app.emit("open-file-path", path);
       }
-    }))
+    }));
+
+  builder
     .manage(PendingOpenFile(Mutex::new(initial_file)))
     .invoke_handler(tauri::generate_handler![take_pending_open_file])
     .setup(|app| {

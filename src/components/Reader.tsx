@@ -5,6 +5,8 @@ import { COMFORT_FILTERS, ComfortFilterId } from "../lib/comfortFilter";
 import { buildImageTransform, CropRect, detectMarginCrop, isNoCrop, isSpreadAspect, NO_CROP, probeDimensions } from "../lib/imageAnalysis";
 import { PerformancePreset } from "../lib/performance";
 import { ReaderProgress, Rotation, ZoomMode } from "../lib/progress";
+import { deriveReadStatus } from "../lib/readStatus";
+import { addReadingTime, incrementPagesRead } from "../lib/readingStats";
 import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import { buildSpreads, findSpreadIndex } from "../lib/spreads";
 import BookmarkPanel from "./BookmarkPanel";
@@ -25,12 +27,16 @@ interface Props {
   comfortFilter: ComfortFilterId;
   initialBookmarks: Bookmark[];
   onBookmarksChange: (bookmarks: Bookmark[]) => void;
+  initialReadOverride: boolean | null;
+  onReadOverrideChange: (value: boolean | null) => void;
 }
 
 const ZOOM_MIN = 25;
 const ZOOM_MAX = 400;
 const ZOOM_STEP = 10;
 const SLIDESHOW_INTERVAL_MS = 4000;
+const SWIPE_MIN_DISTANCE = 60;
+const SWIPE_MAX_DURATION = 600;
 
 const THUMBNAILS_VISIBLE_KEY = "cbreader:readerThumbnailsVisible";
 const PAGEBAR_VISIBLE_KEY = "cbreader:readerPageBarVisible";
@@ -53,6 +59,8 @@ export default function Reader({
   comfortFilter,
   initialBookmarks,
   onBookmarksChange,
+  initialReadOverride,
+  onReadOverrideChange,
 }: Props) {
   const [pageIndex, setPageIndex] = useState(() => Math.min(initialProgress?.pageIndex ?? 0, archive.pageCount - 1));
   const [zoom, setZoom] = useState<ZoomMode>(initialProgress?.zoom ?? "fit-width");
@@ -71,6 +79,7 @@ export default function Reader({
   const [continuousScroll, setContinuousScroll] = useState(() => localStorage.getItem(CONTINUOUS_SCROLL_KEY) === "1");
   const [rotation, setRotation] = useState<Rotation>(initialProgress?.rotation ?? 0);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks);
+  const [readOverride, setReadOverride] = useState<boolean | null>(initialReadOverride);
   const [showBookmarkPanel, setShowBookmarkPanel] = useState(() => localStorage.getItem(BOOKMARK_PANEL_VISIBLE_KEY) === "1");
   const [showInfo, setShowInfo] = useState(false);
   const [slideshowActive, setSlideshowActive] = useState(false);
@@ -86,7 +95,15 @@ export default function Reader({
   const viewportRef = useRef<HTMLDivElement>(null);
   const lastWheelRef = useRef(0);
   const pendingScrollRef = useRef<"top" | "bottom" | null>(null);
-  const panRef = useRef<{ pointerId: number; startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+  const panRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+    startTime: number;
+    pointerType: string;
+  } | null>(null);
   const zoomAnchorRef = useRef<{ mouseX: number; mouseY: number; fractionX: number; fractionY: number } | null>(null);
   // Continuous-scroll mode: DOM nodes for every page (for scrollIntoView) and
   // the pending target of an explicit navigation (goNext/thumbnail click/...)
@@ -102,6 +119,7 @@ export default function Reader({
   const pageDimensionsRef = useRef<Map<number, { width: number; height: number }>>(new Map());
   const marginCropRef = useRef<Map<number, CropRect>>(new Map());
   const analyzedForCropRef = useRef<Set<number>>(new Set());
+  const lastCountedPageRef = useRef<number | null>(null);
 
   const spreads = useMemo(() => buildSpreads(archive.pageCount, doublePage), [archive.pageCount, doublePage]);
   const currentSpreadIdx = findSpreadIndex(spreads, pageIndex);
@@ -306,6 +324,72 @@ export default function Reader({
     onBookmarksChange(bookmarks);
   }, [bookmarks, onBookmarksChange]);
 
+  useEffect(() => {
+    onReadOverrideChange(readOverride);
+  }, [readOverride, onReadOverrideChange]);
+
+  // No override set means the status is derived from progress alone
+  // (finishing the last page auto-marks it "read"), so reaching the end
+  // needs no extra bookkeeping here — see lib/readStatus.ts.
+  const readStatus = deriveReadStatus(readOverride, { pageIndex, pageCount: archive.pageCount });
+  const toggleReadStatus = useCallback(() => {
+    setReadOverride(readStatus === "read" ? false : true);
+  }, [readStatus]);
+  const resetReadOverride = useCallback(() => setReadOverride(null), []);
+
+  // Cumulative reading-time tracking: only counts time the tab is actually
+  // visible (a background tab left open all night shouldn't inflate "temps
+  // de lecture"), and flushes periodically — not just on unmount — so a
+  // crash or force-close doesn't lose an entire session's time.
+  useEffect(() => {
+    let lastResumeAt: number | null = document.visibilityState === "visible" ? Date.now() : null;
+    let accumulatedMs = 0;
+
+    const flush = () => {
+      if (lastResumeAt !== null) {
+        accumulatedMs += Date.now() - lastResumeAt;
+        lastResumeAt = Date.now();
+      }
+      if (accumulatedMs > 0) {
+        addReadingTime(accumulatedMs);
+        accumulatedMs = 0;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        if (lastResumeAt !== null) {
+          accumulatedMs += Date.now() - lastResumeAt;
+          lastResumeAt = null;
+        }
+      } else {
+        lastResumeAt = Date.now();
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    const flushInterval = window.setInterval(flush, 30000);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.clearInterval(flushInterval);
+      flush();
+    };
+  }, []);
+
+  // Lifetime "pages read" counter — one increment per page landed on
+  // (including revisits while flipping back and forth; this tracks page
+  // views over a reading session, not distinct pages). Guarded against
+  // firing twice for the same pageIndex back-to-back so React StrictMode's
+  // dev-only double-invoke of a fresh mount's effects doesn't inflate it —
+  // a genuine revisit still counts, since pageIndex changes away and back
+  // in between.
+  useEffect(() => {
+    if (lastCountedPageRef.current === pageIndex) return;
+    lastCountedPageRef.current = pageIndex;
+    incrementPagesRead();
+  }, [pageIndex]);
+
   const isBookmarked = bookmarks.some((b) => b.pageIndex === pageIndex);
 
   const toggleBookmark = useCallback(() => {
@@ -505,6 +589,7 @@ export default function Reader({
       nextBookmark: goToNextBookmark,
       prevBookmark: goToPrevBookmark,
       toggleSlideshow,
+      toggleReadStatus,
       showComicInfo: () => setShowInfo(true),
       exportCurrentPage,
       openFile: () => openFileInputRef.current?.click(),
@@ -532,6 +617,7 @@ export default function Reader({
       goToNextBookmark,
       goToPrevBookmark,
       toggleSlideshow,
+      toggleReadStatus,
       exportCurrentPage,
       onClose,
     ]
@@ -719,6 +805,8 @@ export default function Reader({
       startY: e.clientY,
       scrollLeft: el.scrollLeft,
       scrollTop: el.scrollTop,
+      startTime: Date.now(),
+      pointerType: e.pointerType,
     };
     setIsPanning(true);
     // Capture keeps the drag going even if the pointer strays outside the
@@ -738,17 +826,41 @@ export default function Reader({
     el.scrollTop = pan.scrollTop - (e.clientY - pan.startY);
   }, []);
 
-  const endViewportPan = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const el = viewportRef.current;
-    if (panRef.current?.pointerId !== e.pointerId) return;
-    panRef.current = null;
-    setIsPanning(false);
-    try {
-      el?.releasePointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-  }, []);
+  // Turns the page on a touch swipe — only when there was no horizontal
+  // overflow to pan into (a real pan, tracked live in onViewportPointerMove
+  // above, already wins over this whenever there's zoomed content to drag),
+  // and only a quick, clearly-horizontal flick counts, so a slow drag or a
+  // mostly-vertical scroll gesture never misfires a page turn. Swipe left
+  // advances like flipping to the next page (flipped in manga mode — same
+  // physical-side convention as the ArrowLeft/ArrowRight swap for
+  // nextPage/prevPage), so navigation always tracks the visual reading
+  // direction the same way keyboard input already does.
+  const endViewportPan = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const el = viewportRef.current;
+      const pan = panRef.current;
+      if (pan?.pointerId !== e.pointerId) return;
+      panRef.current = null;
+      setIsPanning(false);
+      try {
+        el?.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+
+      if (!el || pan.pointerType !== "touch" || continuousScroll) return;
+      const deltaX = e.clientX - pan.startX;
+      const deltaY = e.clientY - pan.startY;
+      const elapsed = Date.now() - pan.startTime;
+      const noHorizontalOverflow = el.scrollWidth <= el.clientWidth + 2;
+      const isSwipe =
+        noHorizontalOverflow && elapsed < SWIPE_MAX_DURATION && Math.abs(deltaX) > SWIPE_MIN_DISTANCE && Math.abs(deltaX) > Math.abs(deltaY) * 1.5;
+      if (!isSwipe) return;
+      if (deltaX < 0) (mangaMode ? goPrev : goNext)();
+      else (mangaMode ? goNext : goPrev)();
+    },
+    [continuousScroll, mangaMode, goNext, goPrev]
+  );
 
   const zoomLabel = typeof zoom === "number" ? `${zoom}%` : zoom === "fit-width" ? "Largeur" : "Hauteur";
   const filterCss = COMFORT_FILTERS.find((f) => f.id === comfortFilter)?.filter ?? undefined;
@@ -873,6 +985,15 @@ export default function Reader({
             <button type="button" onClick={toggleSlideshow} className={slideshowActive ? "active" : ""}>
               Diaporama automatique
             </button>
+            <hr className="toolbar-menu__divider" />
+            <button type="button" onClick={toggleReadStatus} className={readStatus === "read" ? "active" : ""}>
+              {readStatus === "read" ? "Marquer comme non lu" : "Marquer comme lu"}
+            </button>
+            {readOverride !== null && (
+              <button type="button" onClick={resetReadOverride}>
+                Statut automatique (selon la progression)
+              </button>
+            )}
             <hr className="toolbar-menu__divider" />
             <button type="button" onClick={toggleBookmark} className={isBookmarked ? "active" : ""}>
               {isBookmarked ? "Retirer le marque-page" : "Marque-page sur cette page"}

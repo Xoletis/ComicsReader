@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { getCoverPage } from "../lib/archive";
 import {
   ComicEntry,
@@ -22,6 +22,7 @@ import {
 import { folderColorKey, loadFolderColors, saveFolderColor } from "../lib/folderColors";
 import { loadProgressByKey, ReaderProgress, renameProgressKey } from "../lib/progress";
 import { renameBookmarksKey } from "../lib/bookmarks";
+import { deriveReadStatus, loadReadOverride, renameReadStatusKey, saveReadOverride } from "../lib/readStatus";
 import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
 import FolderColorModal from "./FolderColorModal";
 import FolderIcon from "./FolderIcon";
@@ -42,6 +43,7 @@ interface Props {
   refreshSignal: number;
   onOpenSettings: () => void;
   onOpenBookmarksOverview: () => void;
+  onOpenStats: () => void;
   shortcutOverrides: ShortcutOverrides;
   active: boolean;
 }
@@ -62,7 +64,15 @@ function parseKey(key: string): MoveItem {
   return { name, isDirectory };
 }
 
-export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onOpenBookmarksOverview, shortcutOverrides, active }: Props) {
+export default function Library({
+  onOpenFile,
+  refreshSignal,
+  onOpenSettings,
+  onOpenBookmarksOverview,
+  onOpenStats,
+  shortcutOverrides,
+  active,
+}: Props) {
   const [status, setStatus] = useState<Status>("checking");
   const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [path, setPath] = useState<PathEntry[]>([]);
@@ -73,6 +83,10 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
   const [covers, setCovers] = useState<Map<string, string>>(new Map());
   const [coverErrors, setCoverErrors] = useState<Set<string>>(new Set());
   const [progressByName, setProgressByName] = useState<Map<string, ReaderProgress>>(new Map());
+  // Read-status overrides live directly in localStorage (lib/readStatus.ts),
+  // not in React state — this just forces a re-render after toggling one, so
+  // the badge (computed fresh from localStorage on every render) picks it up.
+  const [, bumpReadStatusVersion] = useReducer((n: number) => n + 1, 0);
   const coversRef = useRef(covers);
   const sizeByNameRef = useRef<Map<string, number>>(new Map());
 
@@ -480,6 +494,17 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
     setInfoTarget(target);
   }, []);
 
+  const toggleReadStatusFor = useCallback(
+    (name: string) => {
+      const size = sizeByNameRef.current.get(name);
+      if (size === undefined) return;
+      const status = deriveReadStatus(loadReadOverride(name, size), progressByName.get(name) ?? null);
+      saveReadOverride(name, size, status === "read" ? false : true);
+      bumpReadStatusVersion();
+    },
+    [progressByName]
+  );
+
   const handleColorSelect = useCallback(
     (color: string | null) => {
       if (colorTarget === null) return;
@@ -686,6 +711,7 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
           if (size !== undefined) {
             renameProgressKey(renameTarget.name, trimmed, size);
             renameBookmarksKey(renameTarget.name, trimmed, size);
+            renameReadStatusKey(renameTarget.name, trimmed, size);
           }
         }
         setRenameTarget(null);
@@ -825,6 +851,19 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
         >
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M6 3h12v18l-6-4-6 4V3z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="toolbar__icon-btn library__settings-btn"
+          onClick={onOpenStats}
+          aria-label="Statistiques de lecture"
+          title="Statistiques de lecture"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="5" y1="20" x2="5" y2="12" />
+            <line x1="12" y1="20" x2="12" y2="6" />
+            <line x1="19" y1="20" x2="19" y2="14" />
           </svg>
         </button>
         <button
@@ -988,6 +1027,8 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
                       progress && progress.pageCount > 0
                         ? Math.min(100, Math.round(((progress.pageIndex + 1) / progress.pageCount) * 100))
                         : null;
+                    const size = sizeByNameRef.current.get(entry.name);
+                    const readStatus = size !== undefined ? deriveReadStatus(loadReadOverride(entry.name, size), progress ?? null) : "unread";
                     return (
                       <div
                         key={key}
@@ -1026,6 +1067,14 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
                                 <span className="comic-card__progress-fill" style={{ width: `${percent}%` }} />
                               </span>
                             )}
+                            {readStatus !== "in-progress" && (
+                              <span
+                                className={`comic-card__read-badge comic-card__read-badge--${readStatus}`}
+                                title={readStatus === "read" ? "Lu" : "Non lu"}
+                              >
+                                {readStatus === "read" ? "✓" : ""}
+                              </span>
+                            )}
                           </span>
                           <span className="comic-card__name">{entry.name}</span>
                         </button>
@@ -1043,6 +1092,15 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
                           <div className="entry-menu">
                             <button type="button" onClick={() => startInfo({ name: entry.name, isDirectory: false })}>
                               Infos
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuFor(null);
+                                toggleReadStatusFor(entry.name);
+                              }}
+                            >
+                              {readStatus === "read" ? "Marquer comme non lu" : "Marquer comme lu"}
                             </button>
                             <button type="button" onClick={() => startRename({ name: entry.name, isDirectory: false })}>
                               Renommer
@@ -1128,6 +1186,20 @@ export default function Library({ onOpenFile, refreshSignal, onOpenSettings, onO
                     Couleur
                   </button>
                 )}
+                {!contextMenu.target.isDirectory &&
+                  (() => {
+                    const targetName = contextMenu.target.name;
+                    const targetSize = sizeByNameRef.current.get(targetName);
+                    const targetStatus =
+                      targetSize !== undefined
+                        ? deriveReadStatus(loadReadOverride(targetName, targetSize), progressByName.get(targetName) ?? null)
+                        : "unread";
+                    return (
+                      <button type="button" onClick={() => toggleReadStatusFor(targetName)}>
+                        {targetStatus === "read" ? "Marquer comme non lu" : "Marquer comme lu"}
+                      </button>
+                    );
+                  })()}
                 <button type="button" onClick={() => startRename(contextMenu.target)}>
                   Renommer
                 </button>

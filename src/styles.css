@@ -1339,6 +1339,30 @@ button.active {
   background: var(--color-accent);
 }
 
+.comic-card__read-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 0.65rem;
+  line-height: 1;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.comic-card__read-badge--read {
+  background: #22c55e;
+}
+
+.comic-card__read-badge--unread {
+  background: var(--color-accent);
+}
+
 .comic-card__name {
   font-size: 0.8rem;
   color: var(--color-text-secondary);

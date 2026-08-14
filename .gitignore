@@ -4,5 +4,10 @@ dist
 *.local
 *.tsbuildinfo
 src-tauri/target
-src-tauri/gen
+# gen/android is committed (it's the actual Android Studio project, including
+# the manual signing setup in app/build.gradle.kts) — everything else under
+# gen/ (e.g. a future gen/apple) stays regeneratable/ignored.
+src-tauri/gen/*
+!src-tauri/gen/android
 src-tauri/updater.key
+src-tauri/keystore.properties
