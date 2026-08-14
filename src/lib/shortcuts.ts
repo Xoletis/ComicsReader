@@ -36,6 +36,8 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   { id: "toggleFullscreen", category: "Options", label: "Plein écran", defaultKey: "f" },
   { id: "rotatePage", category: "Options", label: "Pivoter la page", defaultKey: "p" },
   { id: "rotatePageCCW", category: "Options", label: "Pivoter la page (sens inverse)", defaultKey: "u" },
+  { id: "toggleAutoCropMargins", category: "Options", label: "Rognage auto des marges", defaultKey: "v" },
+  { id: "toggleAutoSplitSpreads", category: "Options", label: "Découpe auto des doubles pages", defaultKey: "e" },
   { id: "refreshLibrary", category: "Bibliothèque", label: "Actualiser", defaultKey: "r" },
   { id: "newFolder", category: "Bibliothèque", label: "Nouveau dossier", defaultKey: "n" },
   { id: "searchLibrary", category: "Bibliothèque", label: "Rechercher", defaultKey: "s" },

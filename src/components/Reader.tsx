@@ -2,6 +2,7 @@ import { CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRed
 import { OpenedArchive } from "../lib/archive";
 import { Bookmark, BOOKMARK_COLOR_HEX, BookmarkColor, defaultBookmark } from "../lib/bookmarks";
 import { COMFORT_FILTERS, ComfortFilterId } from "../lib/comfortFilter";
+import { buildImageTransform, CropRect, detectMarginCrop, isNoCrop, isSpreadAspect, NO_CROP, probeDimensions } from "../lib/imageAnalysis";
 import { PerformancePreset } from "../lib/performance";
 import { ReaderProgress, Rotation, ZoomMode } from "../lib/progress";
 import { buildComboToActionMap, comboFromEvent, ShortcutOverrides } from "../lib/shortcuts";
@@ -36,6 +37,8 @@ const PAGEBAR_VISIBLE_KEY = "cbreader:readerPageBarVisible";
 const MANGA_MODE_KEY = "cbreader:mangaMode";
 const CONTINUOUS_SCROLL_KEY = "cbreader:continuousScroll";
 const BOOKMARK_PANEL_VISIBLE_KEY = "cbreader:readerBookmarkPanelVisible";
+const AUTO_CROP_MARGINS_KEY = "cbreader:autoCropMargins";
+const AUTO_SPLIT_SPREADS_KEY = "cbreader:autoSplitSpreads";
 
 export default function Reader({
   archive,
@@ -71,6 +74,12 @@ export default function Reader({
   const [showBookmarkPanel, setShowBookmarkPanel] = useState(() => localStorage.getItem(BOOKMARK_PANEL_VISIBLE_KEY) === "1");
   const [showInfo, setShowInfo] = useState(false);
   const [slideshowActive, setSlideshowActive] = useState(false);
+  const [autoCropMargins, setAutoCropMargins] = useState(() => localStorage.getItem(AUTO_CROP_MARGINS_KEY) === "1");
+  const [autoSplitSpreads, setAutoSplitSpreads] = useState(() => localStorage.getItem(AUTO_SPLIT_SPREADS_KEY) === "1");
+  // Which half of a wide (spread) page is showing in single-page mode when
+  // auto-split is on — irrelevant/unused otherwise. Reset to 0 by every
+  // explicit navigation; only goNext/goPrev step it to 1 and back.
+  const [subPage, setSubPage] = useState<0 | 1>(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
   const openFileInputRef = useRef<HTMLInputElement>(null);
@@ -85,6 +94,14 @@ export default function Reader({
   // observer-driven pageIndex update as the only signal.
   const pageElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const scrollRequestRef = useRef<number | null>(null);
+  // Per-page results from lib/imageAnalysis.ts, populated lazily as pages
+  // load (see the effect near the prefetch loader below) — natural
+  // dimensions drive auto-split's "is this page a spread?" check, and the
+  // margin-crop cache avoids re-analyzing the same page's pixels every
+  // render (or every time it's revisited).
+  const pageDimensionsRef = useRef<Map<number, { width: number; height: number }>>(new Map());
+  const marginCropRef = useRef<Map<number, CropRect>>(new Map());
+  const analyzedForCropRef = useRef<Set<number>>(new Set());
 
   const spreads = useMemo(() => buildSpreads(archive.pageCount, doublePage), [archive.pageCount, doublePage]);
   const currentSpreadIdx = findSpreadIndex(spreads, pageIndex);
@@ -93,35 +110,63 @@ export default function Reader({
   // Jumps to an explicit page (thumbnail click, page-bar input/slider,
   // first/last) — in continuous-scroll mode this also queues a scrollIntoView
   // so the viewport actually moves there, not just the tracked pageIndex.
+  // Always lands on a wide page's first half, never mid-split.
   const navigateTo = useCallback(
     (index: number) => {
       const clamped = Math.min(Math.max(index, 0), archive.pageCount - 1);
       setPageIndex(clamped);
+      setSubPage(0);
       if (continuousScroll) scrollRequestRef.current = clamped;
     },
     [continuousScroll, archive.pageCount]
   );
 
+  const isPageWide = useCallback((index: number) => {
+    const dim = pageDimensionsRef.current.get(index);
+    return !!dim && isSpreadAspect(dim.width, dim.height);
+  }, []);
+
   // In continuous-scroll mode there are no spreads to step through — every
   // page is already on screen, so "next/prev" just moves the tracked index by
   // one and scrolls there. In paged mode, navigation steps by spread instead.
+  // Auto-split intercepts both, in single-page mode only: stepping past the
+  // first half of a wide page shows its second half before moving on to the
+  // next real page, and stepping back does the reverse.
+  const splitActive = autoSplitSpreads && !doublePage && !continuousScroll;
+
   const goNext = useCallback(() => {
+    if (splitActive && subPage === 0 && isPageWide(pageIndex)) {
+      setSubPage(1);
+      return;
+    }
+    setSubPage(0);
     if (continuousScroll) {
       navigateTo(pageIndex + 1);
       return;
     }
     const idx = findSpreadIndex(spreads, pageIndex);
     if (idx < spreads.length - 1) setPageIndex(spreads[idx + 1][0]);
-  }, [continuousScroll, navigateTo, spreads, pageIndex]);
+  }, [splitActive, subPage, isPageWide, continuousScroll, navigateTo, spreads, pageIndex]);
 
   const goPrev = useCallback(() => {
+    if (splitActive && subPage === 1) {
+      setSubPage(0);
+      return;
+    }
+    setSubPage(0);
     if (continuousScroll) {
       navigateTo(pageIndex - 1);
       return;
     }
     const idx = findSpreadIndex(spreads, pageIndex);
     if (idx > 0) setPageIndex(spreads[idx - 1][0]);
-  }, [continuousScroll, navigateTo, spreads, pageIndex]);
+  }, [splitActive, subPage, continuousScroll, navigateTo, spreads, pageIndex]);
+
+  // A wide page's still-unseen second half means there's somewhere left to
+  // go even at the last/first spread — the plain currentSpreadIdx bounds
+  // check alone would wrongly disable Next on a split page's first half.
+  const canGoNext = (splitActive && subPage === 0 && isPageWide(pageIndex)) || currentSpreadIdx < spreads.length - 1;
+  const canGoPrev = (splitActive && subPage === 1) || currentSpreadIdx > 0;
 
   const goFirst = useCallback(() => navigateTo(0), [navigateTo]);
   const goLast = useCallback(() => {
@@ -208,6 +253,31 @@ export default function Reader({
       } catch {
         // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
       }
+      return next;
+    });
+  }, []);
+
+  const toggleAutoCropMargins = useCallback(() => {
+    setAutoCropMargins((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(AUTO_CROP_MARGINS_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAutoSplitSpreads = useCallback(() => {
+    setAutoSplitSpreads((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(AUTO_SPLIT_SPREADS_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage indisponible (mode privé, quota...) - on ignore silencieusement
+      }
+      setSubPage(0);
       return next;
     });
   }, []);
@@ -334,19 +404,55 @@ export default function Reader({
 
     archive.evictOutside(keepMin, keepMax);
 
-    async function loadIndex(index: number) {
-      if (archive.peekPage(index)) return;
-      try {
-        await archive.getPage(index);
-        if (!cancelled) {
-          setFailedPages((prev) => (prev.has(index) ? without(prev, index) : prev));
-          bumpVersion();
-        }
-      } catch {
-        if (!cancelled) {
-          setFailedPages((prev) => (prev.has(index) ? prev : new Set(prev).add(index)));
+    // Natural dimensions (for auto-split's "is this a spread?" check) are
+    // always probed — a plain Image load, cheap enough to never gate behind
+    // a toggle. The margin-crop scan is real pixel work, so it only runs
+    // while auto-crop is on, and analyzedForCropRef keeps it from repeating
+    // for a page already analyzed (including once for each toggle-on).
+    async function analyzePage(index: number) {
+      const page = archive.peekPage(index);
+      if (!page) return;
+      if (!pageDimensionsRef.current.has(index)) {
+        try {
+          const dim = await probeDimensions(page.url);
+          if (!cancelled) {
+            pageDimensionsRef.current.set(index, dim);
+            bumpVersion();
+          }
+        } catch {
+          // dimensions indisponibles - le découpage auto ignore simplement cette page
         }
       }
+      if (autoCropMargins && !analyzedForCropRef.current.has(index)) {
+        analyzedForCropRef.current.add(index);
+        try {
+          const crop = await detectMarginCrop(page.url);
+          if (!cancelled) {
+            marginCropRef.current.set(index, crop);
+            bumpVersion();
+          }
+        } catch {
+          // analyse impossible - pas de rognage pour cette page, sans bloquer la lecture
+        }
+      }
+    }
+
+    async function loadIndex(index: number) {
+      if (!archive.peekPage(index)) {
+        try {
+          await archive.getPage(index);
+          if (!cancelled) {
+            setFailedPages((prev) => (prev.has(index) ? without(prev, index) : prev));
+            bumpVersion();
+          }
+        } catch {
+          if (!cancelled) {
+            setFailedPages((prev) => (prev.has(index) ? prev : new Set(prev).add(index)));
+          }
+          return;
+        }
+      }
+      if (!cancelled) await analyzePage(index);
     }
 
     (async () => {
@@ -364,7 +470,7 @@ export default function Reader({
     return () => {
       cancelled = true;
     };
-  }, [archive, pageIndex, currentSpread, performancePreset]);
+  }, [archive, pageIndex, currentSpread, performancePreset, autoCropMargins]);
 
   // Every action a key combo can trigger, keyed by the same action ids used
   // in lib/shortcuts.ts — the actual combo each one fires on is looked up via
@@ -392,6 +498,8 @@ export default function Reader({
       toggleContinuousScroll,
       rotatePage,
       rotatePageCCW,
+      toggleAutoCropMargins,
+      toggleAutoSplitSpreads,
       toggleBookmark,
       toggleBookmarkPanel,
       nextBookmark: goToNextBookmark,
@@ -417,6 +525,8 @@ export default function Reader({
       toggleContinuousScroll,
       rotatePage,
       rotatePageCCW,
+      toggleAutoCropMargins,
+      toggleAutoSplitSpreads,
       toggleBookmark,
       toggleBookmarkPanel,
       goToNextBookmark,
@@ -642,7 +752,6 @@ export default function Reader({
 
   const zoomLabel = typeof zoom === "number" ? `${zoom}%` : zoom === "fit-width" ? "Largeur" : "Hauteur";
   const filterCss = COMFORT_FILTERS.find((f) => f.id === comfortFilter)?.filter ?? undefined;
-  const rotationTransform = rotation !== 0 ? `rotate(${rotation}deg)` : undefined;
   // A page rotated 90/270° swaps which screen axis its width/height fill —
   // fit-width sizing (full container width) only still fits after rotation
   // if it's applied as fit-height *before* the rotate() transform, and vice
@@ -650,16 +759,62 @@ export default function Reader({
   const sideways = rotation === 90 || rotation === 270;
   const sizingZoom: ZoomMode = sideways ? (zoom === "fit-width" ? "fit-height" : zoom === "fit-height" ? "fit-width" : zoom) : zoom;
   const imageClass = `${typeof sizingZoom === "number" ? "reader__image reader__image--scaled" : `reader__image reader__image--${sizingZoom}`}${zoomSettled ? " reader__image--sharp" : ""}`;
-  const imageStyle: CSSProperties = {
-    ...(typeof zoom === "number" ? { width: `${zoom}%` } : {}),
-    ...(rotationTransform ? { transform: rotationTransform } : {}),
-    ...(filterCss ? { filter: filterCss } : {}),
-  };
   const continuousImageClass = `reader__continuous-image${zoomSettled ? " reader__image--sharp" : ""}`;
-  const continuousImageStyle: CSSProperties = {
-    width: typeof zoom === "number" ? `${zoom}%` : "100%",
-    ...(rotationTransform ? { transform: rotationTransform } : {}),
-    ...(filterCss ? { filter: filterCss } : {}),
+
+  // Which crop rect (if any) applies to a given archive page index: a wide
+  // page being auto-split takes priority over margin-cropping (the two
+  // aren't composed — see lib/imageAnalysis.ts's module comment for why),
+  // and only ever applies to the page currently on screen. subPage 0 is
+  // "read first": the left half normally, the right half in manga mode.
+  const getCropForPage = (index: number): CropRect => {
+    if (splitActive && index === pageIndex && isPageWide(index)) {
+      const firstHalfIsLeft = !mangaMode;
+      const showLeft = subPage === 0 ? firstHalfIsLeft : !firstHalfIsLeft;
+      return showLeft ? { top: 0, right: 0.5, bottom: 0, left: 0 } : { top: 0, right: 0, bottom: 0, left: 0.5 };
+    }
+    if (autoCropMargins) return marginCropRef.current.get(index) ?? NO_CROP;
+    return NO_CROP;
+  };
+
+  // clip-path+transform crops visually without changing the <img>'s layout
+  // box, which is still sized from its *un*cropped intrinsic aspect ratio —
+  // left alone, that would leave fit-width/fit-height sizing computing the
+  // wrong height/width for the now-smaller visible content. Overriding
+  // aspect-ratio (when the page's natural size is already known) fixes the
+  // box itself to match what's actually visible.
+  const aspectRatioFor = (index: number, crop: CropRect): string | undefined => {
+    const dim = pageDimensionsRef.current.get(index);
+    if (!dim || isNoCrop(crop)) return undefined;
+    const w = dim.width * (1 - crop.left - crop.right);
+    const h = dim.height * (1 - crop.top - crop.bottom);
+    return w > 0 && h > 0 ? `${w} / ${h}` : undefined;
+  };
+
+  const getImageStyle = (index: number): CSSProperties => {
+    const crop = getCropForPage(index);
+    const { transform, clipPath } = buildImageTransform(rotation, crop);
+    const aspectRatio = aspectRatioFor(index, crop);
+    return {
+      ...(typeof zoom === "number" ? { width: `${zoom}%` } : {}),
+      ...(transform ? { transform } : {}),
+      ...(clipPath ? { clipPath } : {}),
+      ...(filterCss ? { filter: filterCss } : {}),
+      ...(aspectRatio ? { aspectRatio } : {}),
+    };
+  };
+
+  // Continuous scroll never splits (see the effect above), only crops.
+  const getContinuousImageStyle = (index: number): CSSProperties => {
+    const crop = autoCropMargins ? marginCropRef.current.get(index) ?? NO_CROP : NO_CROP;
+    const { transform, clipPath } = buildImageTransform(rotation, crop);
+    const aspectRatio = aspectRatioFor(index, crop);
+    return {
+      width: typeof zoom === "number" ? `${zoom}%` : "100%",
+      ...(transform ? { transform } : {}),
+      ...(clipPath ? { clipPath } : {}),
+      ...(filterCss ? { filter: filterCss } : {}),
+      ...(aspectRatio ? { aspectRatio } : {}),
+    };
   };
 
   return (
@@ -693,10 +848,10 @@ export default function Reader({
             </button>
           </ToolbarMenu>
           <ToolbarMenu label="Lire">
-            <button type="button" onClick={goPrev} disabled={currentSpreadIdx === 0}>
+            <button type="button" onClick={goPrev} disabled={!canGoPrev}>
               ← Page précédente
             </button>
-            <button type="button" onClick={goNext} disabled={currentSpreadIdx === spreads.length - 1}>
+            <button type="button" onClick={goNext} disabled={!canGoNext}>
               Page suivante →
             </button>
             <button type="button" onClick={() => setDoublePage((v) => !v)} className={doublePage ? "active" : ""}>
@@ -760,6 +915,13 @@ export default function Reader({
               </button>
             )}
             <hr className="toolbar-menu__divider" />
+            <button type="button" onClick={toggleAutoCropMargins} className={autoCropMargins ? "active" : ""}>
+              Rognage auto des marges
+            </button>
+            <button type="button" onClick={toggleAutoSplitSpreads} className={autoSplitSpreads ? "active" : ""}>
+              Découpe auto des doubles pages
+            </button>
+            <hr className="toolbar-menu__divider" />
             <button type="button" onClick={onOpenSettings}>
               Configuration…
             </button>
@@ -780,12 +942,12 @@ export default function Reader({
               <polygon points="19 4 9 12 19 20" fill="currentColor" stroke="none" />
             </svg>
           </button>
-          <button type="button" className="toolbar__icon-btn" onClick={goPrev} disabled={currentSpreadIdx === 0} aria-label="Page précédente" title="Page précédente">
+          <button type="button" className="toolbar__icon-btn" onClick={goPrev} disabled={!canGoPrev} aria-label="Page précédente" title="Page précédente">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="15 4 7 12 15 20" />
             </svg>
           </button>
-          <button type="button" className="toolbar__icon-btn" onClick={goNext} disabled={currentSpreadIdx === spreads.length - 1} aria-label="Page suivante" title="Page suivante">
+          <button type="button" className="toolbar__icon-btn" onClick={goNext} disabled={!canGoNext} aria-label="Page suivante" title="Page suivante">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="9 4 17 12 9 20" />
             </svg>
@@ -936,7 +1098,7 @@ export default function Reader({
                           src={page.url}
                           alt={`Page ${idx + 1}`}
                           className={continuousImageClass}
-                          style={continuousImageStyle}
+                          style={getContinuousImageStyle(idx)}
                           draggable={false}
                         />
                       ) : (
@@ -971,7 +1133,7 @@ export default function Reader({
                         src={page.url}
                         alt={`Page ${idx + 1}`}
                         className={imageClass}
-                        style={imageStyle}
+                        style={getImageStyle(idx)}
                         draggable={false}
                       />
                     );
