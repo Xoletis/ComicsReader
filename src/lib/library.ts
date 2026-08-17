@@ -40,6 +40,14 @@ export function isFileSystemAccessSupported(): boolean {
   return typeof window !== "undefined" && "showDirectoryPicker" in window;
 }
 
+// The File System Access API this feature depends on has no Android
+// implementation (WebView or otherwise) — worth telling Android users that
+// specifically, rather than the generic "use a Chromium browser" message,
+// which isn't actionable from inside the app itself.
+export function isAndroid(): boolean {
+  return typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
+}
+
 export function isComicFile(name: string): boolean {
   return COMIC_EXT_RE.test(name);
 }

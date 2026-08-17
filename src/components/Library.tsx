@@ -9,6 +9,7 @@ import {
   FolderEntry,
   importFileIntoFolder,
   isComicFile,
+  isAndroid,
   isFileSystemAccessSupported,
   listEntries,
   loadDirectoryHandle,
@@ -1121,12 +1122,18 @@ export default function Library({
         </div>
       )}
 
-      {status === "unsupported" && (
-        <p className="library__hint">
-          La bibliothèque de dossier nécessite un navigateur basé sur Chromium (Chrome, Edge...). Vous pouvez toujours
-          ouvrir un fichier individuellement avec le bouton ci-dessus.
-        </p>
-      )}
+      {status === "unsupported" &&
+        (isAndroid() ? (
+          <p className="library__hint">
+            La bibliothèque de dossier n'est pas encore disponible sur mobile. Vous pouvez toujours ouvrir vos comics
+            un par un avec le bouton ci-dessus.
+          </p>
+        ) : (
+          <p className="library__hint">
+            La bibliothèque de dossier nécessite un navigateur basé sur Chromium (Chrome, Edge...). Vous pouvez
+            toujours ouvrir un fichier individuellement avec le bouton ci-dessus.
+          </p>
+        ))}
 
       {status === "disconnected" && (
         <div className="library__empty">
