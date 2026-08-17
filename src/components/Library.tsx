@@ -9,7 +9,6 @@ import {
   FolderEntry,
   importFileIntoFolder,
   isComicFile,
-  isAndroid,
   isFileSystemAccessSupported,
   listEntries,
   loadDirectoryHandle,
@@ -21,6 +20,18 @@ import {
   requestPermission,
   validateEntryName,
 } from "../lib/library";
+import {
+  AndroidComicEntry,
+  AndroidFolderEntry,
+  AndroidRoot,
+  checkPermissionAndroid,
+  getEntryNameAndroid,
+  isAndroidFsSupported,
+  listEntriesAndroid,
+  loadDirectoryHandleAndroid,
+  openComicFileAndroid,
+  pickLibraryFolderAndroid,
+} from "../lib/libraryAndroid";
 import { folderColorKey, loadFolderColors, saveFolderColor } from "../lib/folderColors";
 import { loadProgressByKey, ReaderProgress, renameProgressKey } from "../lib/progress";
 import { renameBookmarksKey } from "../lib/bookmarks";
@@ -84,6 +95,17 @@ export default function Library({
   const [path, setPath] = useState<PathEntry[]>([]);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [comics, setComics] = useState<ComicEntry[]>([]);
+  // Android has its own state tree rather than a union threaded through the
+  // web-backend state above (path/folders/comics/rootHandle): the two
+  // backends' handle types are different enough (opaque URI vs. real
+  // FileSystemHandle, no native move/rename) that forcing one shape would
+  // pollute LibraryTree/SearchModal/MoveFolderModal's props, none of which
+  // Android uses anyway (see lib/libraryAndroid.ts for what's in scope).
+  const androidMode = isAndroidFsSupported();
+  const [androidRoot, setAndroidRoot] = useState<AndroidRoot | null>(null);
+  const [androidPath, setAndroidPath] = useState<AndroidRoot[]>([]);
+  const [androidFolders, setAndroidFolders] = useState<AndroidFolderEntry[]>([]);
+  const [androidComics, setAndroidComics] = useState<AndroidComicEntry[]>([]);
   const [loadingEntries, setLoadingEntries] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   const [covers, setCovers] = useState<Map<string, string>>(new Map());
@@ -175,8 +197,49 @@ export default function Library({
     [refreshEntries]
   );
 
+  const refreshEntriesAndroid = useCallback(async (uri: AndroidRoot["uri"]) => {
+    setLoadingEntries(true);
+    try {
+      const { folders, comics } = await listEntriesAndroid(uri);
+      setAndroidFolders(folders);
+      setAndroidComics(comics);
+    } catch {
+      setAndroidFolders([]);
+      setAndroidComics([]);
+      setPickError("Impossible de lire le contenu de ce dossier.");
+    } finally {
+      setLoadingEntries(false);
+    }
+  }, []);
+
+  const navigateToAndroid = useCallback(
+    (nextPath: AndroidRoot[]) => {
+      setAndroidPath(nextPath);
+      setSelected(new Set());
+      void refreshEntriesAndroid(nextPath[nextPath.length - 1].uri);
+    },
+    [refreshEntriesAndroid]
+  );
+
   useEffect(() => {
     (async () => {
+      if (androidMode) {
+        const uri = await loadDirectoryHandleAndroid();
+        if (!uri) {
+          setStatus("disconnected");
+          return;
+        }
+        const name = await getEntryNameAndroid(uri);
+        setAndroidRoot({ name, uri });
+        const permission = await checkPermissionAndroid(uri);
+        if (permission === "granted") {
+          setStatus("connected");
+          navigateToAndroid([{ name, uri }]);
+        } else {
+          setStatus("needs-permission");
+        }
+        return;
+      }
       if (!isFileSystemAccessSupported()) {
         setStatus("unsupported");
         return;
@@ -195,9 +258,10 @@ export default function Library({
         setStatus("needs-permission");
       }
     })();
-  }, [navigateTo]);
+  }, [androidMode, navigateTo, navigateToAndroid]);
 
   useEffect(() => {
+    if (androidMode) return;
     setCovers((prev) => {
       for (const url of prev.values()) URL.revokeObjectURL(url);
       return new Map();
@@ -257,7 +321,72 @@ export default function Library({
     return () => {
       cancelled.current = true;
     };
-  }, [comics]);
+  }, [androidMode, comics]);
+
+  // Android equivalent of the effect above. The one real difference:
+  // openComicFileAndroid() always reads the whole file (the plugin has no
+  // partial/range read), so getting a cover here is exactly as expensive as
+  // opening the comic — mitigated the same way, by the cover cache below
+  // only ever paying that cost once per file.
+  useEffect(() => {
+    if (!androidMode) return;
+    setCovers((prev) => {
+      for (const url of prev.values()) URL.revokeObjectURL(url);
+      return new Map();
+    });
+    setCoverErrors(new Set());
+    setProgressByName(new Map());
+    sizeByNameRef.current = new Map();
+    lastModifiedByNameRef.current = new Map();
+    if (androidComics.length === 0) return;
+
+    const cancelled = { current: false };
+    const queue = [...androidComics];
+
+    async function worker() {
+      while (queue.length > 0 && !cancelled.current) {
+        const entry = queue.shift();
+        if (!entry) break;
+        try {
+          const file = await openComicFileAndroid(entry.uri, entry.name);
+          sizeByNameRef.current.set(entry.name, file.size);
+          lastModifiedByNameRef.current.set(entry.name, file.lastModified);
+          const progress = loadProgressByKey(entry.name, file.size);
+          if (progress) setProgressByName((prev) => new Map(prev).set(entry.name, progress));
+
+          const cachedUrl = await loadCachedCoverUrl(entry.name, file.size, file.lastModified);
+          if (cachedUrl) {
+            if (cancelled.current) {
+              URL.revokeObjectURL(cachedUrl);
+              return;
+            }
+            setCovers((prev) => new Map(prev).set(entry.name, cachedUrl));
+            continue;
+          }
+
+          const cover = await getCoverPage(file);
+          if (cancelled.current) {
+            if (cover) URL.revokeObjectURL(cover.url);
+            return;
+          }
+          if (cover) {
+            setCovers((prev) => new Map(prev).set(entry.name, cover.url));
+            cacheCoverInBackground(entry.name, file.size, file.lastModified, cover.url);
+          } else {
+            setCoverErrors((prev) => new Set(prev).add(entry.name));
+          }
+        } catch {
+          if (!cancelled.current) setCoverErrors((prev) => new Set(prev).add(entry.name));
+        }
+      }
+    }
+
+    void Promise.all(Array.from({ length: Math.min(COVER_CONCURRENCY, queue.length) }, worker));
+
+    return () => {
+      cancelled.current = true;
+    };
+  }, [androidMode, androidComics]);
 
   // Reading a comic updates its saved progress in localStorage without touching
   // `comics` or the covers, so returning from the reader (refreshSignal changes)
@@ -437,9 +566,29 @@ export default function Library({
     }
   }, [rootHandle, navigateTo]);
 
+  // Also doubles as "reconnect": Android's Storage Access Framework has no
+  // silent re-prompt for a URI whose permission was revoked, so getting it
+  // back is the same picker flow as connecting fresh.
+  const handlePickFolderAndroid = useCallback(async () => {
+    setPickError(null);
+    try {
+      const root = await pickLibraryFolderAndroid();
+      setAndroidRoot(root);
+      setStatus("connected");
+      navigateToAndroid([root]);
+    } catch {
+      setPickError("Impossible d'accéder à ce dossier.");
+    }
+  }, [navigateToAndroid]);
+
   const handleRefresh = useCallback(() => {
     if (currentHandle) void refreshEntries(currentHandle);
   }, [currentHandle, refreshEntries]);
+
+  const handleRefreshAndroid = useCallback(() => {
+    const uri = androidPath[androidPath.length - 1]?.uri;
+    if (uri) void refreshEntriesAndroid(uri);
+  }, [androidPath, refreshEntriesAndroid]);
 
   const toggleTree = useCallback(() => {
     setTreeVisible((prev) => {
@@ -490,10 +639,45 @@ export default function Library({
     return () => window.clearInterval(interval);
   }, [autoWatch, status, currentHandle]);
 
+  // Android equivalent — readDir() is a plain directory listing (no file
+  // content reads), so this is exactly as cheap as the web version above.
+  useEffect(() => {
+    if (!autoWatch || !androidMode || status !== "connected") return;
+    const uri = androidPath[androidPath.length - 1]?.uri;
+    if (!uri) return;
+    const differs = (a: { name: string }[], b: { name: string }[]) => {
+      if (a.length !== b.length) return true;
+      const names = new Set(a.map((e) => e.name));
+      return !b.every((e) => names.has(e.name));
+    };
+    const interval = window.setInterval(async () => {
+      try {
+        const fresh = await listEntriesAndroid(uri);
+        setAndroidFolders((prev) => (differs(prev, fresh.folders) ? fresh.folders : prev));
+        setAndroidComics((prev) => (differs(prev, fresh.comics) ? fresh.comics : prev));
+      } catch {
+        // le dossier a pu devenir temporairement inaccessible - on réessaiera au prochain tick
+      }
+    }, AUTO_WATCH_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [autoWatch, androidMode, status, androidPath]);
+
   const openComic = useCallback(
     async (entry: ComicEntry) => {
       try {
         const file = await entry.handle.getFile();
+        onOpenFile(file);
+      } catch {
+        setPickError(`Impossible d'ouvrir « ${entry.name} ».`);
+      }
+    },
+    [onOpenFile]
+  );
+
+  const openComicAndroid = useCallback(
+    async (entry: AndroidComicEntry) => {
+      try {
+        const file = await openComicFileAndroid(entry.uri, entry.name);
         onOpenFile(file);
       } catch {
         setPickError(`Impossible d'ouvrir « ${entry.name} ».`);
@@ -918,32 +1102,75 @@ export default function Library({
       onMouseDown={handleGridMouseDown}
     >
       <div className="library__main">
-      {status === "connected" && path.length > 0 && (
+      {status === "connected" && (androidMode ? androidPath.length > 0 : path.length > 0) && (
         <div className="library__breadcrumb-row">
           <span className="library__breadcrumb">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
             </svg>
-            {path.map((entry, i) => (
+            {(androidMode ? androidPath : path).map((entry, i, arr) => (
               <span key={i}>
                 {i > 0 && <span className="library__breadcrumb-sep">/</span>}
                 <button
                   type="button"
                   className="library__breadcrumb-crumb"
-                  disabled={i === path.length - 1}
-                  onClick={() => navigateTo(path.slice(0, i + 1))}
+                  disabled={i === arr.length - 1}
+                  onClick={() => (androidMode ? navigateToAndroid(androidPath.slice(0, i + 1)) : navigateTo(path.slice(0, i + 1)))}
                 >
                   {entry.name}
                 </button>
               </span>
             ))}
-            <span className="library__breadcrumb-count">({comics.length})</span>
+            <span className="library__breadcrumb-count">({androidMode ? androidComics.length : comics.length})</span>
           </span>
         </div>
       )}
       <div className="library__header">
         <h2>Bibliothèque</h2>
-        {status === "connected" && path.length > 0 && (
+        {androidMode && status === "connected" && androidPath.length > 0 && (
+          <div className="library__folder-controls">
+            <span className="library__toolbar-group">
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={handleRefreshAndroid}
+                aria-label="Actualiser"
+                title="Actualiser"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="library__action-btn library__action-btn--icon-only"
+                onClick={() => void handlePickFolderAndroid()}
+                aria-label="Changer de dossier"
+                title="Changer de dossier"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H3z" />
+                  <path d="M3 8l1.5 10.5A2 2 0 0 0 6.5 20h11a2 2 0 0 0 2-1.5L21 8" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`library__action-btn library__action-btn--icon-only${autoWatch ? " active" : ""}`}
+                onClick={toggleAutoWatch}
+                aria-label="Surveillance auto"
+                title="Surveillance auto — détecte automatiquement les nouveaux fichiers, sans avoir à cliquer sur Actualiser"
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </span>
+          </div>
+        )}
+        {!androidMode && status === "connected" && path.length > 0 && (
           <div className="library__folder-controls">
             <span className="library__toolbar-group">
               <button
@@ -1122,35 +1349,34 @@ export default function Library({
         </div>
       )}
 
-      {status === "unsupported" &&
-        (isAndroid() ? (
-          <p className="library__hint">
-            La bibliothèque de dossier n'est pas encore disponible sur mobile. Vous pouvez toujours ouvrir vos comics
-            un par un avec le bouton ci-dessus.
-          </p>
-        ) : (
-          <p className="library__hint">
-            La bibliothèque de dossier nécessite un navigateur basé sur Chromium (Chrome, Edge...). Vous pouvez
-            toujours ouvrir un fichier individuellement avec le bouton ci-dessus.
-          </p>
-        ))}
+      {/* Android goes through androidMode above and never lands on "unsupported" — this is
+          only reached by a desktop web build in a non-Chromium browser (e.g. Firefox). */}
+      {status === "unsupported" && (
+        <p className="library__hint">
+          La bibliothèque de dossier nécessite un navigateur basé sur Chromium (Chrome, Edge...). Vous pouvez
+          toujours ouvrir un fichier individuellement avec le bouton ci-dessus.
+        </p>
+      )}
 
       {status === "disconnected" && (
         <div className="library__empty">
           <p>Connectez un dossier pour afficher tous vos comics d'un coup.</p>
-          <button type="button" onClick={handlePickFolder}>
+          <button type="button" onClick={() => (androidMode ? handlePickFolderAndroid() : handlePickFolder())}>
             Choisir un dossier de comics
           </button>
         </div>
       )}
 
-      {status === "needs-permission" && rootHandle && (
+      {status === "needs-permission" && (androidMode ? androidRoot : rootHandle) && (
         <div className="library__empty">
-          <p>Le dossier « {rootHandle.name} » est mémorisé mais nécessite une confirmation d'accès.</p>
-          <button type="button" onClick={handleReconnect}>
+          <p>
+            Le dossier « {androidMode ? androidRoot?.name : rootHandle?.name} » est mémorisé mais nécessite une
+            confirmation d'accès.
+          </p>
+          <button type="button" onClick={() => (androidMode ? handlePickFolderAndroid() : handleReconnect())}>
             Reconnecter le dossier
           </button>
-          <button type="button" onClick={handlePickFolder}>
+          <button type="button" onClick={() => (androidMode ? handlePickFolderAndroid() : handlePickFolder())}>
             Choisir un autre dossier
           </button>
         </div>
@@ -1159,6 +1385,87 @@ export default function Library({
       {status === "connected" &&
         (loadingEntries ? (
           <p className="library__hint">Chargement du dossier…</p>
+        ) : androidMode ? (
+          androidFolders.length === 0 && androidComics.length === 0 ? (
+            <p className="library__hint">Ce dossier est vide.</p>
+          ) : (
+            <div>
+              {androidFolders.length > 0 && (
+                <div className="library__section">
+                  <h3 className="library__section-title">Dossiers</h3>
+                  <div className="library__grid library__grid--folders">
+                    {androidFolders.map((folder) => (
+                      <div key={folder.uri.uri} className="comic-card comic-card--folder">
+                        <button
+                          type="button"
+                          className="comic-card__open"
+                          onClick={() => navigateToAndroid([...androidPath, folder])}
+                          title={folder.name}
+                        >
+                          <span className="folder-card__icon-wrap">
+                            <FolderIcon className="comic-card__folder-icon" />
+                          </span>
+                          <span className="comic-card__name">{folder.name}</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {androidComics.length > 0 && (
+                <div className="library__section">
+                  <h3 className="library__section-title">Comics ({androidComics.length})</h3>
+                  <div className="library__grid library__grid--comics">
+                    {androidComics.map((entry) => {
+                      const progress = progressByName.get(entry.name);
+                      const percent =
+                        progress && progress.pageCount > 0
+                          ? Math.min(100, Math.round(((progress.pageIndex + 1) / progress.pageCount) * 100))
+                          : null;
+                      const size = sizeByNameRef.current.get(entry.name);
+                      const readStatus =
+                        size !== undefined ? deriveReadStatus(loadReadOverride(entry.name, size), progress ?? null) : "unread";
+                      return (
+                        <div key={entry.uri.uri} className="comic-card">
+                          <button
+                            type="button"
+                            className="comic-card__open"
+                            onClick={() => void openComicAndroid(entry)}
+                            title={entry.name}
+                          >
+                            <span className="comic-card__cover">
+                              {covers.has(entry.name) ? (
+                                <img src={covers.get(entry.name)} alt="" loading="lazy" />
+                              ) : coverErrors.has(entry.name) ? (
+                                <span className="comic-card__fallback">📕</span>
+                              ) : (
+                                <span className="comic-card__loading" />
+                              )}
+                              {percent !== null && (
+                                <span className="comic-card__progress" title={`${percent}% lu`}>
+                                  <span className="comic-card__progress-fill" style={{ width: `${percent}%` }} />
+                                </span>
+                              )}
+                              {readStatus !== "in-progress" && (
+                                <span
+                                  className={`comic-card__read-badge comic-card__read-badge--${readStatus}`}
+                                  title={readStatus === "read" ? "Lu" : "Non lu"}
+                                >
+                                  {readStatus === "read" ? "✓" : ""}
+                                </span>
+                              )}
+                            </span>
+                            <span className="comic-card__name">{entry.name}</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )
         ) : folders.length === 0 && comics.length === 0 ? (
           <p className="library__hint">Ce dossier est vide.</p>
         ) : (
@@ -1366,7 +1673,7 @@ export default function Library({
       {pickError && <p className="drop-zone__error">{pickError}</p>}
       </div>
 
-      {treeVisible && rootHandle && status === "connected" && (
+      {!androidMode && treeVisible && rootHandle && status === "connected" && (
         <LibraryTree
           rootHandle={rootHandle}
           rootName={rootHandle.name}
@@ -1534,7 +1841,7 @@ export default function Library({
           );
         })()}
 
-      {searchOpen && rootHandle && (
+      {!androidMode && searchOpen && rootHandle && (
         <SearchModal
           rootHandle={rootHandle}
           rootName={rootHandle.name}

@@ -1,6 +1,6 @@
 [package]
 name = "cbreader"
-version = "1.0.1"
+version = "1.2.1"
 description = "Lecteur de bandes dessinées CBZ/CBR"
 authors = []
 license = ""
@@ -35,3 +35,12 @@ tauri-plugin-fs = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+
+# Android-only: the official plugin-dialog/plugin-fs combo has no folder
+# picker or directory listing on Android (open Tauri issue #14587, unresolved
+# as of writing) — this third-party plugin fills that gap via Android's
+# Storage Access Framework. Version pinned exactly, matching the frontend
+# package (tauri-plugin-android-fs-api) per the plugin's own compatibility
+# requirement — the two must always be bumped together.
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-android-fs = "=29.0.0"

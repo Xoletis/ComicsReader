@@ -58,6 +58,12 @@ pub fn run() {
       }
     }));
 
+  // Android-only: powers the Library folder picker/listing on mobile (see
+  // src/lib/libraryAndroid.ts) — no desktop equivalent needed since
+  // showDirectoryPicker() already covers that there.
+  #[cfg(target_os = "android")]
+  let builder = builder.plugin(tauri_plugin_android_fs::init());
+
   builder
     .manage(PendingOpenFile(Mutex::new(initial_file)))
     .invoke_handler(tauri::generate_handler![take_pending_open_file])

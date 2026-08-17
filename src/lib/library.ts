@@ -31,21 +31,13 @@ export interface SearchResult {
 
 export type PermissionState = "granted" | "prompt" | "denied";
 
-const COMIC_EXT_RE = /\.(cbz|cbr|zip|rar|pdf)$/i;
+export const COMIC_EXT_RE = /\.(cbz|cbr|zip|rar|pdf)$/i;
 const INVALID_NAME_RE = /[<>:"/\\|?*\x00-\x1F]/;
 
 const HANDLE_KEY = "directoryHandle";
 
 export function isFileSystemAccessSupported(): boolean {
   return typeof window !== "undefined" && "showDirectoryPicker" in window;
-}
-
-// The File System Access API this feature depends on has no Android
-// implementation (WebView or otherwise) — worth telling Android users that
-// specifically, rather than the generic "use a Chromium browser" message,
-// which isn't actionable from inside the app itself.
-export function isAndroid(): boolean {
-  return typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 }
 
 export function isComicFile(name: string): boolean {

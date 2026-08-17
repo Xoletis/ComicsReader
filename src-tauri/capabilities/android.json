@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "android",
+  "description": "Android-only permissions for tauri-plugin-android-fs (see src/lib.rs and src/lib/libraryAndroid.ts) — kept out of mobile.json since that capability also claims iOS, where this plugin isn't registered at all.",
+  "windows": [
+    "main"
+  ],
+  "platforms": ["android"],
+  "permissions": [
+    "android-fs:default"
+  ]
+}
