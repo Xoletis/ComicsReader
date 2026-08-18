@@ -11,3 +11,10 @@ src-tauri/gen/*
 !src-tauri/gen/android
 src-tauri/updater.key
 src-tauri/keystore.properties
+
+# Android signing key material must never be committed — generate locally
+# (see Documents/cbreader-signing-key on this machine) and set the
+# ANDROID_KEY_* GitHub secrets instead (see .github/workflows/release.yml).
+*.jks
+*.b64
+*.base64.txt
