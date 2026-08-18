@@ -1349,10 +1349,12 @@ export default function Library({
         </div>
       )}
 
+      {/* Android goes through androidMode above and never lands on "unsupported" — this is
+          only reached by a desktop web build in a non-Chromium browser (e.g. Firefox). */}
       {status === "unsupported" && (
         <p className="library__hint">
-          La bibliothèque de dossier nécessite un navigateur basé sur Chromium (Chrome, Edge...). Vous pouvez toujours
-          ouvrir un fichier individuellement avec le bouton ci-dessus.
+          La bibliothèque de dossier nécessite un navigateur basé sur Chromium (Chrome, Edge...). Vous pouvez
+          toujours ouvrir un fichier individuellement avec le bouton ci-dessus.
         </p>
       )}
 

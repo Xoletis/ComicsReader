@@ -1,6 +1,8 @@
 [package]
 name = "cbreader"
+
 version = "1.2.2"
+
 description = "Lecteur de bandes dessinées CBZ/CBR"
 authors = []
 license = ""
