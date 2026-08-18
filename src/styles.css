@@ -1672,6 +1672,30 @@ button.active {
   border-color: var(--color-danger-strong);
 }
 
+/* On a narrow (typically phone-portrait) screen the toolbar's full row —
+   3 dropdown menus plus up to 11 icon buttons — wraps into several rows and
+   eats into the space meant for the actual page. Every hidden icon here
+   stays reachable via the "Lire"/"Options" dropdown menus, which already
+   have full text labels for everything — this only trims the always-visible
+   row, it doesn't remove functionality. Placed after every unconditional
+   .toolbar__icon-btn rule above so plain source-order cascade is enough to
+   win ties, no specificity hacks needed. */
+@media (max-width: 700px) {
+  .toolbar {
+    gap: 6px;
+    padding: 6px 8px;
+  }
+
+  .toolbar__icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .toolbar__icon-btn--collapsible {
+    display: none;
+  }
+}
+
 .toolbar-menu {
   position: relative;
 }

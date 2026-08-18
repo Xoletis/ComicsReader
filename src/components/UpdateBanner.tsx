@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { checkForUpdate, installUpdate } from "../lib/updater";
+import { AndroidUpdateInfo, checkForUpdateAndroid, installUpdateAndroid, isAndroidFsSupported } from "../lib/updaterAndroid";
 
+// Desktop's Update carries its own downloadAndInstall(); Android's plain
+// {version, downloadUrl} instead goes through installUpdateAndroid() (see
+// lib/updaterAndroid.ts) — kept as a discriminated union rather than one
+// shared shape so each branch below stays correctly typed against the
+// function it actually calls.
 type Status =
   | { kind: "idle" }
-  | { kind: "available"; update: Update }
+  | { kind: "available"; platform: "desktop"; update: Update }
+  | { kind: "available"; platform: "android"; update: AndroidUpdateInfo }
   | { kind: "downloading"; percent: number | null }
   | { kind: "error"; message: string };
 
@@ -13,11 +20,12 @@ export default function UpdateBanner() {
 
   useEffect(() => {
     let cancelled = false;
-    checkForUpdate()
-      .then((update) => {
-        if (!cancelled && update) setStatus({ kind: "available", update });
-      })
-      .catch((err) => console.error("Update check failed", err));
+    const check = isAndroidFsSupported()
+      ? checkForUpdateAndroid().then((update) => update && setStatus({ kind: "available", platform: "android", update }))
+      : checkForUpdate().then((update) => update && setStatus({ kind: "available", platform: "desktop", update }));
+    check.catch((err) => {
+      if (!cancelled) console.error("Update check failed", err);
+    });
     return () => {
       cancelled = true;
     };
@@ -26,7 +34,7 @@ export default function UpdateBanner() {
   if (status.kind === "idle") return null;
 
   if (status.kind === "available") {
-    const { update } = status;
+    const { update, platform } = status;
     return (
       <div className="update-banner">
         <span className="update-banner__text">
@@ -39,12 +47,14 @@ export default function UpdateBanner() {
             onClick={async () => {
               setStatus({ kind: "downloading", percent: null });
               try {
-                await installUpdate(update, (downloaded, total) => {
+                const onProgress = (downloaded: number, total: number | null) => {
                   setStatus({
                     kind: "downloading",
                     percent: total ? Math.round((downloaded / total) * 100) : null,
                   });
-                });
+                };
+                if (platform === "android") await installUpdateAndroid(update, onProgress);
+                else await installUpdate(update, onProgress);
               } catch (err) {
                 console.error("Update install failed", err);
                 setStatus({
@@ -54,7 +64,7 @@ export default function UpdateBanner() {
               }
             }}
           >
-            Mettre à jour et redémarrer
+            {platform === "android" ? "Télécharger et installer" : "Mettre à jour et redémarrer"}
           </button>
         </div>
       </div>
