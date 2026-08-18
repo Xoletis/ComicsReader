@@ -159,43 +159,26 @@ async function resolveFormat(file: ArchiveSource): Promise<ArchiveFormat | null>
 export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
   const format = await resolveFormat(file);
   if (format === "pdf") return openPdfArchive(file);
-  if (format !== "cbz" && format !== "cbr") {
-    throw new UnsupportedFormatError("Format de fichier non reconnu. Utilisez un fichier .cbz, .cbr, .pdf, .zip ou .rar.");
-  }
+  if (format === "cbz") return openCbzArchive(file);
+  if (format === "cbr") return openCbrArchive(file);
+  throw new UnsupportedFormatError("Format de fichier non reconnu. Utilisez un fichier .cbz, .cbr, .pdf, .zip ou .rar.");
+}
 
-  const buffer = await file.arrayBuffer();
-  const names = format === "cbz" ? collectCbzImageNames(buffer) : await collectCbrImageNames(buffer);
-
-  if (names.length === 0) {
-    throw new UnsupportedFormatError("Aucune image trouvée dans cette archive.");
-  }
-
-  const comicInfoName = format === "cbz" ? findCbzComicInfoName(buffer) : await findCbrComicInfoName(buffer);
-  let comicInfo: ComicInfo | null = null;
-  if (comicInfoName) {
-    try {
-      const extracted = format === "cbz" ? extractCbzSingle(buffer, comicInfoName) : await extractCbrSingle(buffer, comicInfoName);
-      if (extracted) comicInfo = parseComicInfoXml(new TextDecoder().decode(extracted.data));
-    } catch {
-      // ComicInfo.xml présent mais illisible - on continue sans métadonnées
-    }
-  }
-
+// Shared page cache/eviction/dispose bookkeeping for every archive format —
+// only how a single page's bytes get extracted differs between them.
+function makePagedArchive(
+  format: ArchiveFormat,
+  pageCount: number,
+  comicInfo: ComicInfo | null,
+  extractIndex: (index: number) => Promise<Page>,
+  options?: { onEvict?: (keepMin: number, keepMax: number) => void; onDispose?: () => void }
+): OpenedArchive {
   const cache = new Map<number, Page>();
   const pending = new Map<number, Promise<Page>>();
 
-  async function extractIndex(index: number): Promise<Page> {
-    const name = names[index];
-    const image = format === "cbz" ? extractCbzSingle(buffer, name) : await extractCbrSingle(buffer, name);
-    if (!image) {
-      throw new UnsupportedFormatError(`Impossible d'extraire la page "${name}".`);
-    }
-    return toPage(image.name, image.data);
-  }
-
   return {
     format,
-    pageCount: names.length,
+    pageCount,
     comicInfo,
 
     peekPage(index) {
@@ -225,14 +208,152 @@ export async function openArchive(file: ArchiveSource): Promise<OpenedArchive> {
           cache.delete(index);
         }
       }
+      options?.onEvict?.(keepMin, keepMax);
     },
 
     dispose() {
       for (const page of cache.values()) URL.revokeObjectURL(page.url);
       cache.clear();
       pending.clear();
+      options?.onDispose?.();
     },
   };
+}
+
+const SUPPORTED_ZIP_METHODS = new Set([0, 8]); // stored, deflate — everything readZipEntryData can inflate
+
+// Reads pages straight off `file` via range requests (readZipCentralDirectory +
+// readZipEntryData, the same primitives getCbzCoverFast already uses), so the
+// full archive is never held in memory at once — the fix for large CBZ files
+// crashing on Android, where the per-app memory ceiling is far below desktop.
+// Falls back to the old whole-buffer path for layouts it can't range-read
+// (ZIP64, exotic compression methods), same as getCbzCoverFast already does.
+async function openCbzArchive(file: ArchiveSource): Promise<OpenedArchive> {
+  try {
+    return await openCbzArchiveStreaming(file);
+  } catch {
+    return openCbzArchiveBuffered(file);
+  }
+}
+
+async function openCbzArchiveStreaming(file: ArchiveSource): Promise<OpenedArchive> {
+  const entries = await readZipCentralDirectory(file);
+  const imageEntries = entries
+    .filter((e) => !e.name.endsWith("/") && isImageEntry(e.name))
+    .sort((a, b) => compareNatural(a.name, b.name));
+  if (imageEntries.length === 0) {
+    throw new UnsupportedFormatError("Aucune image trouvée dans cette archive.");
+  }
+  if (imageEntries.some((e) => !SUPPORTED_ZIP_METHODS.has(e.method))) {
+    throw new Error("unsupported compression method for the streaming path");
+  }
+
+  const comicInfoEntry = entries.find((e) => !e.name.endsWith("/") && COMICINFO_RE.test(e.name));
+  let comicInfo: ComicInfo | null = null;
+  if (comicInfoEntry) {
+    try {
+      const extracted = await readZipEntryData(file, comicInfoEntry);
+      if (extracted) comicInfo = parseComicInfoXml(new TextDecoder().decode(extracted.data));
+    } catch {
+      // ComicInfo.xml présent mais illisible - on continue sans métadonnées
+    }
+  }
+
+  return makePagedArchive("cbz", imageEntries.length, comicInfo, async (index) => {
+    const entry = imageEntries[index];
+    const image = await readZipEntryData(file, entry);
+    if (!image) throw new UnsupportedFormatError(`Impossible d'extraire la page "${entry.name}".`);
+    return toPage(image.name, image.data);
+  });
+}
+
+async function openCbzArchiveBuffered(file: ArchiveSource): Promise<OpenedArchive> {
+  const buffer = await file.arrayBuffer();
+  const names = collectCbzImageNames(buffer);
+  if (names.length === 0) {
+    throw new UnsupportedFormatError("Aucune image trouvée dans cette archive.");
+  }
+
+  const comicInfoName = findCbzComicInfoName(buffer);
+  let comicInfo: ComicInfo | null = null;
+  if (comicInfoName) {
+    try {
+      const extracted = extractCbzSingle(buffer, comicInfoName);
+      if (extracted) comicInfo = parseComicInfoXml(new TextDecoder().decode(extracted.data));
+    } catch {
+      // ComicInfo.xml présent mais illisible - on continue sans métadonnées
+    }
+  }
+
+  return makePagedArchive("cbz", names.length, comicInfo, async (index) => {
+    const name = names[index];
+    const image = extractCbzSingle(buffer, name);
+    if (!image) throw new UnsupportedFormatError(`Impossible d'extraire la page "${name}".`);
+    return toPage(image.name, image.data);
+  });
+}
+
+// RAR has no central directory, so listing pages still needs one full
+// sequential read — but unlike the old code, that buffer isn't kept for the
+// whole reading session afterward (the single biggest memory cost for a large
+// CBR). Pages are instead re-extracted on demand from a small, lazily-grown
+// prefix of `file` (the same trick getCbrCoverFast below uses just for the
+// cover), and evicted alongside the app's own page cache so a long reading
+// session never accumulates the whole book in memory.
+async function openCbrArchive(file: ArchiveSource): Promise<OpenedArchive> {
+  const buffer = await file.arrayBuffer();
+  const names = await collectCbrImageNames(buffer);
+  if (names.length === 0) {
+    throw new UnsupportedFormatError("Aucune image trouvée dans cette archive.");
+  }
+
+  const comicInfoName = await findCbrComicInfoName(buffer);
+  let comicInfo: ComicInfo | null = null;
+  if (comicInfoName) {
+    try {
+      const extracted = await extractCbrSingle(buffer, comicInfoName);
+      if (extracted) comicInfo = parseComicInfoXml(new TextDecoder().decode(extracted.data));
+    } catch {
+      // ComicInfo.xml présent mais illisible - on continue sans métadonnées
+    }
+  }
+  // `buffer` intentionally not captured below — see comment above.
+
+  const nameToIndex = new Map(names.map((name, index) => [name, index]));
+  const extracted = new Map<string, Uint8Array>();
+  let prefixSize = Math.min(COVER_PREFIX_START, file.size);
+
+  async function ensureExtracted(name: string): Promise<void> {
+    for (let attempt = 0; attempt < COVER_PREFIX_MAX_TRIES && !extracted.has(name); attempt++) {
+      const isFullFile = prefixSize >= file.size;
+      const prefixBuffer = await file.slice(0, prefixSize).arrayBuffer();
+      const images = await extractCbrLeadingImages(prefixBuffer);
+      for (const image of images) extracted.set(image.name, image.data);
+      if (extracted.has(name) || isFullFile) return;
+      prefixSize = Math.min(prefixSize * COVER_PREFIX_GROWTH, file.size);
+    }
+  }
+
+  return makePagedArchive(
+    "cbr",
+    names.length,
+    comicInfo,
+    async (index) => {
+      const name = names[index];
+      await ensureExtracted(name);
+      const data = extracted.get(name);
+      if (!data) throw new UnsupportedFormatError(`Impossible d'extraire la page "${name}".`);
+      return toPage(name, data);
+    },
+    {
+      onEvict(keepMin, keepMax) {
+        for (const name of [...extracted.keys()]) {
+          const index = nameToIndex.get(name)!;
+          if (index < keepMin || index > keepMax) extracted.delete(name);
+        }
+      },
+    }
+  );
 }
 
 export async function getCoverPage(file: ArchiveSource): Promise<Page | null> {
@@ -459,7 +580,8 @@ const COVER_PREFIX_MAX_TRIES = 5; // 8, 48, 288 MB, ... then the whole file
 // prefix buffer in a single extractor pass, instead of listing then extracting
 // separately. Hitting the truncation boundary throws a clean, catchable error —
 // verified against node-unrar-js — so whatever was already extracted before that
-// point is simply kept.
+// point is simply kept. Used both by getCbrCoverFast below and by
+// openCbrArchive's own growing-prefix page reads.
 async function extractCbrLeadingImages(buffer: ArrayBuffer): Promise<ExtractedImage[]> {
   let extractor;
   try {
@@ -566,50 +688,9 @@ async function openPdfArchive(file: ArchiveSource): Promise<OpenedArchive> {
     // Métadonnées absentes ou illisibles - on continue sans
   }
 
-  const cache = new Map<number, Page>();
-  const pending = new Map<number, Promise<Page>>();
-
-  return {
-    format: "pdf",
-    pageCount: doc.numPages,
-    comicInfo,
-
-    peekPage(index) {
-      return cache.get(index);
-    },
-
-    async getPage(index) {
-      const cached = cache.get(index);
-      if (cached) return cached;
-      const inFlight = pending.get(index);
-      if (inFlight) return inFlight;
-
-      const promise = renderPdfPage(doc, index + 1)
-        .then((page) => {
-          cache.set(index, page);
-          return page;
-        })
-        .finally(() => pending.delete(index));
-      pending.set(index, promise);
-      return promise;
-    },
-
-    evictOutside(keepMin, keepMax) {
-      for (const index of [...cache.keys()]) {
-        if (index < keepMin || index > keepMax) {
-          URL.revokeObjectURL(cache.get(index)!.url);
-          cache.delete(index);
-        }
-      }
-    },
-
-    dispose() {
-      for (const page of cache.values()) URL.revokeObjectURL(page.url);
-      cache.clear();
-      pending.clear();
-      destroy();
-    },
-  };
+  return makePagedArchive("pdf", doc.numPages, comicInfo, (index) => renderPdfPage(doc, index + 1), {
+    onDispose: destroy,
+  });
 }
 
 // No cheap "just the first page" shortcut exists for PDF the way the ZIP/RAR
