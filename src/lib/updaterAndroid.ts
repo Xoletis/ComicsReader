@@ -7,23 +7,10 @@
 // it to the system package installer via tauri-plugin-android-fs's Opener
 // (already integrated for the Library feature; see lib/libraryAndroid.ts).
 import { getVersion } from "@tauri-apps/api/app";
-import { isTauri } from "@tauri-apps/api/core";
 import * as AndroidFs from "tauri-plugin-android-fs-api";
+import { isAndroidFsSupported } from "./libraryAndroid";
 
-// Despite its synchronous, no-args signature, AndroidFs.isAndroid() actually
-// reaches into Tauri's native bridge and throws outright in any context
-// without a Tauri runtime at all (confirmed by direct testing while building
-// the Library folder feature) — isTauri() short-circuits that, and the
-// try/catch covers the desktop Tauri build too, where this plugin is never
-// registered (Cargo.toml gates it to target_os = "android" only).
-export function isAndroidFsSupported(): boolean {
-  if (!isTauri()) return false;
-  try {
-    return AndroidFs.isAndroid();
-  } catch {
-    return false;
-  }
-}
+export { isAndroidFsSupported };
 
 const RELEASES_API_URL = "https://api.github.com/repos/Xoletis/ComicsReader/releases/latest";
 const APK_NAME_RE = /^CBReader_.*\.apk$/i;
