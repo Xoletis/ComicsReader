@@ -105,6 +105,13 @@ export default function Reader({
     pointerType: string;
   } | null>(null);
   const zoomAnchorRef = useRef<{ mouseX: number; mouseY: number; fractionX: number; fractionY: number } | null>(null);
+  // Two-finger pinch-to-zoom — the touch equivalent of the ctrl+wheel zoom
+  // below, which has no touch analogue at all. Tracks every active touch
+  // pointer by id so a pinch can start the instant a second finger joins an
+  // already-down first one (which onViewportPointerDown below treats as an
+  // ordinary pan/swipe start until this promotes it).
+  const activeTouchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<{ startDistance: number; startZoom: number } | null>(null);
   // Continuous-scroll mode: DOM nodes for every page (for scrollIntoView) and
   // the pending target of an explicit navigation (goNext/thumbnail click/...)
   // so the scroll-restore effect knows to jump there instead of leaving the
@@ -794,33 +801,76 @@ export default function Reader({
   }, [continuousScroll]);
 
   // PDF-viewer-style hand-drag panning: click and drag the page to scroll it
-  // when zoomed in past the viewport, instead of relying on scrollbars.
-  const onViewportPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const el = viewportRef.current;
-    if (!el) return;
-    panRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      scrollLeft: el.scrollLeft,
-      scrollTop: el.scrollTop,
-      startTime: Date.now(),
-      pointerType: e.pointerType,
-    };
-    setIsPanning(true);
-    // Capture keeps the drag going even if the pointer strays outside the
-    // viewport mid-gesture; harmless to skip if the browser refuses it.
-    try {
-      el.setPointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-  }, []);
+  // when zoomed in past the viewport, instead of relying on scrollbars. A
+  // second touch joining an already-down first one promotes the gesture to
+  // a pinch instead (see activeTouchesRef/pinchRef) — ctrl+wheel's zoom has
+  // no touch equivalent otherwise.
+  const onViewportPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      const el = viewportRef.current;
+      if (!el) return;
+
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+
+      if (e.pointerType === "touch") {
+        activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (activeTouchesRef.current.size >= 2) {
+          panRef.current = null;
+          setIsPanning(false);
+          const [a, b] = [...activeTouchesRef.current.values()].slice(0, 2);
+          pinchRef.current = {
+            startDistance: Math.hypot(a.x - b.x, a.y - b.y),
+            startZoom: typeof zoom === "number" ? zoom : 100,
+          };
+          return;
+        }
+      }
+
+      panRef.current = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        scrollLeft: el.scrollLeft,
+        scrollTop: el.scrollTop,
+        startTime: Date.now(),
+        pointerType: e.pointerType,
+      };
+      setIsPanning(true);
+    },
+    [zoom]
+  );
 
   const onViewportPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const pan = panRef.current;
     const el = viewportRef.current;
+
+    if (e.pointerType === "touch" && activeTouchesRef.current.has(e.pointerId)) {
+      activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pinch = pinchRef.current;
+      if (pinch && activeTouchesRef.current.size >= 2) {
+        const [a, b] = [...activeTouchesRef.current.values()].slice(0, 2);
+        const distance = Math.hypot(a.x - b.x, a.y - b.y);
+        if (el && pinch.startDistance > 0 && el.scrollWidth > 0 && el.scrollHeight > 0) {
+          const rect = el.getBoundingClientRect();
+          const midX = (a.x + b.x) / 2 - rect.left;
+          const midY = (a.y + b.y) / 2 - rect.top;
+          zoomAnchorRef.current = {
+            mouseX: midX,
+            mouseY: midY,
+            fractionX: (el.scrollLeft + midX) / el.scrollWidth,
+            fractionY: (el.scrollTop + midY) / el.scrollHeight,
+          };
+          setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((pinch.startZoom * distance) / pinch.startDistance))));
+        }
+        return;
+      }
+    }
+
+    const pan = panRef.current;
     if (!pan || !el || pan.pointerId !== e.pointerId) return;
     el.scrollLeft = pan.scrollLeft - (e.clientX - pan.startX);
     el.scrollTop = pan.scrollTop - (e.clientY - pan.startY);
@@ -838,15 +888,24 @@ export default function Reader({
   const endViewportPan = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       const el = viewportRef.current;
-      const pan = panRef.current;
-      if (pan?.pointerId !== e.pointerId) return;
-      panRef.current = null;
-      setIsPanning(false);
       try {
         el?.releasePointerCapture(e.pointerId);
       } catch {
         // ignore
       }
+
+      if (e.pointerType === "touch") {
+        activeTouchesRef.current.delete(e.pointerId);
+        // Dropping below 2 fingers ends the pinch outright rather than trying
+        // to hand off to a pan/swipe with whatever finger (if any) is left —
+        // simpler and avoids a jump from re-anchoring mid-gesture.
+        if (activeTouchesRef.current.size < 2) pinchRef.current = null;
+      }
+
+      const pan = panRef.current;
+      if (pan?.pointerId !== e.pointerId) return;
+      panRef.current = null;
+      setIsPanning(false);
 
       if (!el || pan.pointerType !== "touch" || continuousScroll) return;
       const deltaX = e.clientX - pan.startX;
@@ -1057,7 +1116,7 @@ export default function Reader({
             manga mode visibly *do* something even outside double-page mode,
             unlike the reader__spread reorder above which only shows there. */}
         <div className="toolbar__nav-icons" style={mangaMode ? { transform: "scaleX(-1)" } : undefined}>
-          <button type="button" className="toolbar__icon-btn" onClick={goFirst} disabled={currentSpreadIdx === 0} aria-label="Première page" title="Première page">
+          <button type="button" className="toolbar__icon-btn toolbar__icon-btn--collapsible" onClick={goFirst} disabled={currentSpreadIdx === 0} aria-label="Première page" title="Première page">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="5" y1="4" x2="5" y2="20" />
               <polygon points="19 4 9 12 19 20" fill="currentColor" stroke="none" />
@@ -1073,7 +1132,7 @@ export default function Reader({
               <polyline points="9 4 17 12 9 20" />
             </svg>
           </button>
-          <button type="button" className="toolbar__icon-btn" onClick={goLast} disabled={currentSpreadIdx === spreads.length - 1} aria-label="Dernière page" title="Dernière page">
+          <button type="button" className="toolbar__icon-btn toolbar__icon-btn--collapsible" onClick={goLast} disabled={currentSpreadIdx === spreads.length - 1} aria-label="Dernière page" title="Dernière page">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="19" y1="4" x2="19" y2="20" />
               <polygon points="5 4 15 12 5 20" fill="currentColor" stroke="none" />
@@ -1084,7 +1143,7 @@ export default function Reader({
         <div className="toolbar__icons">
           <button
             type="button"
-            className={`toolbar__icon-btn${mangaMode ? " active" : ""}`}
+            className={`toolbar__icon-btn toolbar__icon-btn--collapsible${mangaMode ? " active" : ""}`}
             onClick={toggleMangaMode}
             aria-label="Mode manga (droite → gauche)"
             title="Mode manga (droite → gauche)"
@@ -1096,7 +1155,7 @@ export default function Reader({
           </button>
           <button
             type="button"
-            className={`toolbar__icon-btn${doublePage ? " active" : ""}`}
+            className={`toolbar__icon-btn toolbar__icon-btn--collapsible${doublePage ? " active" : ""}`}
             onClick={() => setDoublePage((v) => !v)}
             aria-label="Double page"
             title="Double page"
@@ -1108,7 +1167,7 @@ export default function Reader({
           </button>
           <button
             type="button"
-            className={`toolbar__icon-btn${continuousScroll ? " active" : ""}`}
+            className={`toolbar__icon-btn toolbar__icon-btn--collapsible${continuousScroll ? " active" : ""}`}
             onClick={toggleContinuousScroll}
             aria-label="Défilement continu"
             title="Défilement continu"
@@ -1132,7 +1191,7 @@ export default function Reader({
           </button>
           <button
             type="button"
-            className={`toolbar__icon-btn${showBookmarkPanel ? " active" : ""}`}
+            className={`toolbar__icon-btn toolbar__icon-btn--collapsible${showBookmarkPanel ? " active" : ""}`}
             onClick={toggleBookmarkPanel}
             aria-label="Panneau des marque-pages"
             title="Panneau des marque-pages"
@@ -1145,7 +1204,7 @@ export default function Reader({
           <span className="toolbar__separator" />
           <button
             type="button"
-            className={`toolbar__icon-btn${slideshowActive ? " active" : ""}`}
+            className={`toolbar__icon-btn toolbar__icon-btn--collapsible${slideshowActive ? " active" : ""}`}
             onClick={toggleSlideshow}
             aria-label="Diaporama automatique"
             title="Diaporama automatique"
@@ -1163,7 +1222,7 @@ export default function Reader({
           </button>
           <button
             type="button"
-            className={`toolbar__icon-btn${fullscreen ? " active" : ""}`}
+            className={`toolbar__icon-btn toolbar__icon-btn--collapsible${fullscreen ? " active" : ""}`}
             onClick={toggleFullscreen}
             aria-label="Plein écran"
             title="Plein écran"
