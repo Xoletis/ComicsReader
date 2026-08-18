@@ -58,6 +58,13 @@ pub fn run() {
       }
     }));
 
+  // Android-only: powers the Library folder picker/listing and the in-app
+  // update installer on mobile (see src/lib/libraryAndroid.ts and
+  // src/lib/updaterAndroid.ts) — no desktop equivalent needed since
+  // showDirectoryPicker()/tauri-plugin-updater already cover those there.
+  #[cfg(target_os = "android")]
+  let builder = builder.plugin(tauri_plugin_android_fs::init());
+
   builder
     .manage(PendingOpenFile(Mutex::new(initial_file)))
     .invoke_handler(tauri::generate_handler![take_pending_open_file])

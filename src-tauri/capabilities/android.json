@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "android",
+  "description": "Android-only permissions for tauri-plugin-android-fs (see src/lib.rs) — kept out of mobile.json since that capability also claims iOS, where this plugin isn't registered at all. Covers both the Library folder feature (src/lib/libraryAndroid.ts) and the in-app update installer (src/lib/updaterAndroid.ts).",
+  "windows": [
+    "main"
+  ],
+  "platforms": ["android"],
+  "permissions": [
+    "android-fs:default",
+    "android-fs:allow-create-new-public-file",
+    "android-fs:allow-write-file",
+    "android-fs:allow-show-view-file-app-chooser"
+  ]
+}

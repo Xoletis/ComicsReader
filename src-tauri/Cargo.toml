@@ -35,3 +35,15 @@ tauri-plugin-fs = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+
+# Android-only: the official plugin-dialog/plugin-fs combo has no folder
+# picker, directory listing, or "open with another app" support on Android
+# (open Tauri issue #14587, unresolved as of writing) — this third-party
+# plugin fills that gap via Android's Storage Access Framework, used by both
+# the Library folder feature (src/lib/libraryAndroid.ts) and the in-app
+# update installer (src/lib/updaterAndroid.ts). Version pinned exactly,
+# matching the frontend package (tauri-plugin-android-fs-api) per the
+# plugin's own compatibility requirement — the two must always be bumped
+# together.
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-android-fs = "=29.0.0"
