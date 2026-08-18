@@ -14,7 +14,17 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.cbreader"
-        android:usesCleartextTraffic="${usesCleartextTraffic}">
+        android:usesCleartextTraffic="${usesCleartextTraffic}"
+        android:largeHeap="true">
+        <!-- openArchive() (src/lib/archive.ts) reads a whole CBZ/CBR into a
+             single in-memory buffer regardless of how the file was opened
+             (Bibliothèque or "Choisir un fichier") — for large comics
+             (200MB+) this can exceed Android's default per-app heap ceiling,
+             which is far lower than desktop. largeHeap roughly doubles it,
+             a standard low-risk mitigation for apps with legitimately large
+             single allocations (this is not a full fix for arbitrarily
+             large files, see the true streaming rework needed for that). -->
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
